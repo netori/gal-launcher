@@ -33,3 +33,6 @@ src-tauri/gen
 
 # 零散临时文件
 *.tmp
+
+# Wrangler 本地开发状态
+.wrangler
