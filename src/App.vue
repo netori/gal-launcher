@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from "vue";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useLibrary } from "./store";
-import { api, type Game } from "./api";
+import { api, type Game, type UpdateInfo } from "./api";
 
 import GameCard from "./components/GameCard.vue";
 import ScanDialog from "./components/ScanDialog.vue";
@@ -21,6 +22,33 @@ const selectedGame = ref<Game | null>(null);
 const showScan = ref(false);
 const showSettings = ref(false);
 const showResources = ref(false);
+
+// 更新提示：非打扰式横幅，启动延迟检查；失败静默
+const updateInfo = ref<UpdateInfo | null>(null);
+const updateBannerOpen = ref(false);
+async function checkForUpdate() {
+  try {
+    const u = await api.checkUpdate();
+    if (u) {
+      updateInfo.value = u;
+      updateBannerOpen.value = true;
+    }
+  } catch {
+    /* 网络/限流等原因查不到就不打扰 */
+  }
+}
+function goUpdate() {
+  const u = updateInfo.value;
+  if (!u) return;
+  updateBannerOpen.value = false;
+  openUrl(u.downloadUrl ?? u.url).catch(() => {});
+}
+function dismissUpdateForever() {
+  const v = updateInfo.value?.version;
+  if (v) api.dismissUpdate(v).catch(() => {});
+  updateBannerOpen.value = false;
+}
+const updateNote = () => (updateInfo.value?.note ?? "").replace(/\s+/g, " ").slice(0, 90);
 
 // 启动文件选择：首次启动 / 手动更换
 const launchPick = ref<{ game: Game; useLocale: boolean; pickOnly: boolean } | null>(null);
@@ -96,7 +124,11 @@ function toast(msg: string, type: "ok" | "err" = "ok") {
   }, 2600);
 }
 
-onMounted(() => lib.refresh());
+onMounted(() => {
+  lib.refresh();
+  // 启动后稍等片刻再查更新，不抢首屏
+  window.setTimeout(() => checkForUpdate(), 1500);
+});
 
 async function runAction(fn: () => Promise<void>, okMsg?: string) {
   try {
@@ -438,4 +470,22 @@ function trashGame(game: Game) {
   <TransitionGroup name="toast" tag="div" class="toast-wrap">
     <div v-for="t in toasts" :key="t.id" class="toast" :class="t.type">{{ t.msg }}</div>
   </TransitionGroup>
+
+  <!-- 更新提示横幅（左下角，非打扰；失败静默） -->
+  <Transition name="update">
+    <div v-if="updateBannerOpen && updateInfo" class="update-banner">
+      <div class="ub-ic"><Icon name="external-link" :size="16" /></div>
+      <div class="ub-body">
+        <div class="ub-title">发现新版本 <b>{{ updateInfo.version }}</b></div>
+        <div class="ub-note" v-if="updateNote()">{{ updateNote() }}</div>
+      </div>
+      <div class="ub-actions">
+        <button class="btn small primary" @click="goUpdate"><Icon name="download" :size="13" /> 下载更新</button>
+        <button class="btn small ghost" @click="dismissUpdateForever">不再提示</button>
+        <button class="btn icon-btn ghost" title="暂时关闭（下次启动再看）" @click="updateBannerOpen = false">
+          <Icon name="close" :size="14" />
+        </button>
+      </div>
+    </div>
+  </Transition>
 </template>

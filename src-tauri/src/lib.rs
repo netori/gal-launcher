@@ -70,6 +70,8 @@ pub fn run() {
             commands::search_unpack_tools,
             commands::export_backup,
             commands::import_backup,
+            commands::check_update,
+            commands::dismiss_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

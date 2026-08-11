@@ -96,3 +96,17 @@ pub struct PatchInput {
     pub source_path: String,
     pub install_method: String,
 }
+
+/// GitHub 最新 release 的更新信息（供前端展示更新提示）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateInfo {
+    /// release 标签名，如 "v0.2.0"
+    pub version: String,
+    /// release 页面链接
+    pub url: String,
+    /// release 发布说明（可能为空）
+    pub note: String,
+    /// 安装包（exe/msi）直链，可能为空
+    pub download_url: Option<String>,
+}

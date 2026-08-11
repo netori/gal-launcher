@@ -70,6 +70,13 @@ export interface Settings {
   unpackTool: string | null;
 }
 
+export interface UpdateInfo {
+  version: string;
+  url: string;
+  note: string;
+  downloadUrl: string | null;
+}
+
 export const api = {
   scanDirectory: (root: string) => invoke<Candidate[]>("scan_directory", { root }),
   importGames: (candidates: Candidate[]) =>
@@ -142,6 +149,10 @@ export const api = {
     invoke<{ path: string; fileCount: number }>("export_backup", { dest }),
   importBackup: (src: string) =>
     invoke<{ games: number; covers: number; backups: number }>("import_backup", { src }),
+
+  // 更新检查
+  checkUpdate: () => invoke<UpdateInfo | null>("check_update"),
+  dismissUpdate: (version: string) => invoke<void>("dismiss_update", { version }),
 };
 
 export interface ArchiveInfo {
