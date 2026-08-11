@@ -127,3 +127,19 @@ VNDB 元数据补全 → 汉化/R18 补丁管理 → **内置解包**（XP3/PFS/
    - 真机复核卡片 hover 柔光与分层阴影
 3. 之后可选：NBZ、PAC(pack!=0)、Yamiyo PKG、PGD（用户暂停，勿擅动）
 4. 产出后跑 `npx vue-tsc --noEmit` + Claude Preview 截图验证（`.claude/launch.json` 的 `gal-web`，端口 1421；主 dev 在 1420）
+
+## 11. GitHub 仓库与版本发布流程（2026-08-11 新增）
+
+- **仓库（公开，更新检查依赖它）**：https://github.com/netori/gal-launcher
+  - 分支 `main`；`gh` 已登录（netori）；本仓库提交身份：`netori <netori@users.noreply.github.com>`（仅仓库级配置）
+- **更新检查机制**（本期新增）：
+  - 启动后 ~1.5s 静默查 `https://api.github.com/repos/netori/gal-launcher/releases/latest`；网络失败/限流一律静默，绝不打扰
+  - 后端 `commands::check_update` / `dismiss_update`（仓库常量 `UPDATE_REPO` 在 commands.rs，改仓库记得同步）
+  - 版本比较：`vX.Y.Z` 标签 vs `tauri.conf.json` 当前版本；不低于当前或已被「不再提示」→ None
+  - 前端：左下角非打扰横幅（下载更新=浏览器打开 exe/msi 直链或 release 页 / 不再提示=写 settings `dismissed_update` 按版本记录 / ×=只关本次）
+- **发布新版本流程**：
+  1. 改版本号三处：`package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 的 `version`（release 标签用 `vX.Y.Z`）
+  2. `npm run tauri build`
+  3. `gh release create vX.Y.Z --title "vX.Y.Z" --notes "更新内容" "src-tauri/target/release/bundle/nsis/GAL Launcher_0.1.0_x64-setup.exe" "src-tauri/target/release/bundle/msi/GAL Launcher_0.1.0_x64_en-US.msi"`（注意：文件名里的版本号是 tauri.conf.json 里的，若版本变了路径里就是新版本号）
+  4. 旧版用户下次启动即收到左上横幅；`不再提示` 只针对该版本，发新版本会再次提示
+- 国内网络注意：`api.github.com` 可能不稳定，更新检查会静默失败不影响使用；资源站导航里 2DFan 用的是大陆中转域名（fan2d.top）
