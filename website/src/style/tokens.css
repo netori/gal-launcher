@@ -1,0 +1,55 @@
+/* ============ 品牌字体（自托管，与产品应用一致） ============ */
+@font-face {
+  font-family: "Fraunces";
+  src: url("../assets/fonts/Fraunces-Variable.woff2") format("woff2");
+  font-weight: 300 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Fraunces";
+  src: url("../assets/fonts/Fraunces-Variable.woff2") format("woff2");
+  font-weight: 300 900;
+  font-style: italic;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Outfit";
+  src: url("../assets/fonts/Outfit-Variable.woff2") format("woff2");
+  font-weight: 300 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ============ 设计令牌（与产品 src/style.css 完全一致） ============ */
+:root {
+  color-scheme: dark;
+  --bg: #16120f;
+  --bg-soft: #1d1916;
+  --surface: #241f1a;
+  --surface-2: #2e2821;
+  --border: rgba(255, 250, 244, 0.08);
+  --border-strong: rgba(255, 250, 244, 0.16);
+  --text: #f2ede6;
+  --text-dim: #b0a898;
+  --text-faint: #91897a;
+  --accent: #d97e3d;
+  --accent-ink: #241a0f;
+  --danger: #e2645c;
+  --ok: #93b46e;
+  --star: #f0b429;
+  --ring: rgba(217, 126, 61, 0.5);
+  --radius: 14px;
+  --radius-inner: 10px;
+  --shadow: 0 10px 30px rgba(24, 15, 8, 0.5);
+  --font-display: "Fraunces", "Microsoft YaHei UI", "Microsoft YaHei", serif;
+  --font-sans: "Outfit", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  /* 动效 */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+  --d-press: 120ms;
+  --d-fast: 160ms;
+  --d-base: 220ms;
+  --d-slow: 300ms;
+}
