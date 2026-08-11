@@ -142,4 +142,5 @@ VNDB 元数据补全 → 汉化/R18 补丁管理 → **内置解包**（XP3/PFS/
   2. `npm run tauri build`
   3. `gh release create vX.Y.Z --title "vX.Y.Z" --notes "更新内容" "src-tauri/target/release/bundle/nsis/GAL Launcher_0.1.0_x64-setup.exe" "src-tauri/target/release/bundle/msi/GAL Launcher_0.1.0_x64_en-US.msi"`（注意：文件名里的版本号是 tauri.conf.json 里的，若版本变了路径里就是新版本号）
   4. 旧版用户下次启动即收到左上横幅；`不再提示` 只针对该版本，发新版本会再次提示
-- 国内网络注意：`api.github.com` 可能不稳定，更新检查会静默失败不影响使用；资源站导航里 2DFan 用的是大陆中转域名（fan2d.top）
+- **国内网络注意**：`api.github.com` 可能不稳定，更新检查会静默失败不影响使用；资源站导航里 2DFan 用的是大陆中转域名（fan2d.top）
+- **⚠️ 本机无法上传 release 资产**：`uploads.github.com` 在本机 DNS 被污染（全域名都指向代理 IP 172.28.255.154 = 典型的 Clash 类工具，rules 没涵盖 uploads.github.com → 直连 DNS NXDOMAIN）。`gh release create/upload` 传安装包会失败。**workaround**：① 在代理工具的规则里把 `uploads.github.com` 走代理，或换一个能解析该域名的网络再 `gh release upload v0.1.0 <文件>`；② 或用浏览器在 Release 页手动拖拽上传。release 本体、tag 与更新检查不受影响。首个 v0.1.0 release 已建（无资产附件）
