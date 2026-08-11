@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use rusqlite::Connection;
 
@@ -662,6 +662,86 @@ pub fn import_backup(src: String, state: State<AppState>) -> CmdResult<crate::ba
     }
     let mut guard = lock(&state);
     crate::backup::restore(&state.db_path, Path::new(&src), &mut guard).map_err(|e| e.to_string())
+}
+
+// ---------------- 更新检查 ----------------
+
+/// 实际发布的 GitHub 仓库（owner/repo）。改仓库时同步这一处即可。
+const UPDATE_REPO: &str = "netori/gal-launcher";
+
+/// 检查 GitHub 最新 release：
+/// - 无 release / 网络失败 / 请求被限流 → 静默返回 None（不打扰用户）
+/// - 最新版本不高于当前版本 → None
+/// - 已被用户「不再提示」过的版本 → None
+#[tauri::command]
+pub fn check_update(
+    app: AppHandle,
+    state: State<AppState>,
+) -> CmdResult<Option<crate::models::UpdateInfo>> {
+    let dismissed = {
+        let db = lock(&state);
+        db::get_setting(&db, "dismissed_update").unwrap_or_default()
+    };
+    let info = query_latest_release(&app);
+    Ok(info.and_then(|u| (u.version != dismissed).then_some(u)))
+}
+
+/// 记录「不再提示」的版本；之后新版本发布时仍会提示。
+#[tauri::command]
+pub fn dismiss_update(version: String, state: State<AppState>) -> CmdResult<()> {
+    let db = lock(&state);
+    db::set_setting(&db, "dismissed_update", &version).map_err(|e| e.to_string())
+}
+
+fn query_latest_release(app: &AppHandle) -> Option<crate::models::UpdateInfo> {
+    let current = app.package_info().version.to_string();
+    let url = format!("https://api.github.com/repos/{UPDATE_REPO}/releases/latest");
+    let resp = ureq::get(&url)
+        .set("User-Agent", &format!("gal-launcher/{current}"))
+        .set("Accept", "application/vnd.github+json")
+        .timeout(std::time::Duration::from_secs(8))
+        .call()
+        .ok()?;
+    let body = resp.into_string().ok()?;
+    let v: serde_json::Value = serde_json::from_str(&body).ok()?;
+    let tag = v.get("tag_name")?.as_str()?.to_string();
+    if let Some(remote) = parse_version(&tag) {
+        if let Some(cur) = parse_version(&current) {
+            if remote <= cur {
+                return None; // 不高于当前版本
+            }
+        }
+    }
+    let url = v.get("html_url").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let note = v.get("body").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    // 优先找一个安装包（exe/msi）资产作为下载直链，找不到就只给 release 页
+    let download_url = v
+        .get("assets")?
+        .as_array()?
+        .iter()
+        .filter_map(|a| {
+            let name = a.get("name")?.as_str()?;
+            let dl = a.get("browser_download_url")?.as_str()?;
+            Some((name, dl))
+        })
+        .find(|(name, _)| name.ends_with(".exe") || name.ends_with(".msi"))
+        .map(|(_, dl)| dl.to_string());
+    Some(crate::models::UpdateInfo {
+        version: tag,
+        url,
+        note,
+        download_url,
+    })
+}
+
+/// 从 "v1.2.3" / "1.2.3" 解析出 (major, minor, patch)。
+fn parse_version(s: &str) -> Option<(u32, u32, u32)> {
+    let t = s.trim().trim_start_matches(['v', 'V']);
+    let mut it = t.split('.');
+    let maj = it.next()?.parse().ok()?;
+    let min = it.next()?.parse().ok()?;
+    let patch = it.next()?.parse().ok()?;
+    Some((maj, min, patch))
 }
 
 /// 在常见位置查找常用的外部解包工具（GARbro / GalArc / arc_unpacker 等）。
