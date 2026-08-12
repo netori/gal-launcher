@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ref, watch } from "vue";
-import { open } from "@tauri-apps/plugin-dialog";
 import { api, type Candidate } from "../api";
 import Icon from "./Icon.vue";
+import FolderPickerDialog from "./FolderPickerDialog.vue";
 import { useCloseOnEscape } from "../composables/useCloseOnEscape";
 
 const props = defineProps<{ modelValue: boolean }>();
@@ -35,9 +35,26 @@ function reset() {
   err.value = "";
 }
 
-async function pickFolder() {
-  const dir = await open({ directory: true, multiple: false, title: "选择游戏根目录" });
-  if (!dir) return;
+const folderStart = ref("C:\\");
+const showFolderPicker = ref(false);
+
+/** 打开内置轻量目录选择器（原生对话框在巨型目录下会卡死窗口，故不用）。 */
+function openFolderPicker() {
+  api
+    .getSettings()
+    .then((s) => {
+      folderStart.value = s.gameRoot || "C:\\";
+      showFolderPicker.value = true;
+    })
+    .catch(() => (showFolderPicker.value = true));
+}
+
+function onFolderPicked(dir: string) {
+  showFolderPicker.value = false;
+  scanRoot(dir);
+}
+
+async function scanRoot(dir: string) {
   root.value = dir;
   err.value = "";
   scanning.value = true;
@@ -106,7 +123,7 @@ async function confirmImport() {
           <label>扫描根目录</label>
           <div class="row">
             <input type="text" :value="root" placeholder="点击浏览选择存放 galgame 的文件夹" disabled />
-            <button class="btn" @click="pickFolder" :disabled="scanning || importing">浏览…</button>
+            <button class="btn" @click="openFolderPicker" :disabled="scanning || importing">浏览…</button>
           </div>
         </div>
 
@@ -168,6 +185,14 @@ async function confirmImport() {
         </button>
       </div>
     </div>
+
+    <FolderPickerDialog
+      v-if="showFolderPicker"
+      :root="folderStart"
+      title="选择扫描根目录"
+      @picked="onFolderPicked"
+      @close="showFolderPicker = false"
+    />
   </div>
 </template>
 
