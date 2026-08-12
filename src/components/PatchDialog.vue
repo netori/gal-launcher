@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, type Game, type Patch } from "../api";
 import Icon from "./Icon.vue";
+import FolderPickerDialog from "./FolderPickerDialog.vue";
 import { useCloseOnEscape } from "../composables/useCloseOnEscape";
 
 const props = defineProps<{ game: Game | null }>();
@@ -50,18 +51,18 @@ async function pickFile() {
   }
 }
 
-async function pickFolder() {
-  const p = await open({
-    directory: true,
-    multiple: false,
-    title: "选择补丁文件夹（覆盖式）",
-  });
-  if (p) {
-    sourcePath.value = p;
-    const leaf = (p.replace(/\\/g, "/").split("/").pop() ?? "补丁").trim();
-    name.value = leaf || "补丁";
-    installMethod.value = "replace";
-  }
+const folderStart = ref("C:\\");
+const showFolder = ref(false);
+function openFolderPicker() {
+  folderStart.value = props.game?.sourceDir || "C:\\";
+  showFolder.value = true;
+}
+function onFolderPicked(p: string) {
+  showFolder.value = false;
+  sourcePath.value = p;
+  const leaf = (p.replace(/\\/g, "/").split("/").pop() ?? "补丁").trim();
+  name.value = leaf || "补丁";
+  installMethod.value = "replace";
 }
 
 const canSave = computed(() => name.value.trim() && sourcePath.value.trim());
@@ -106,7 +107,7 @@ async function save() {
           <div class="row">
             <input v-model="sourcePath" type="text" placeholder="选择 zip / 文件夹 / 安装器 exe" />
             <button class="btn small" @click="pickFile" :disabled="busy">文件…</button>
-            <button class="btn small" @click="pickFolder" :disabled="busy">文件夹…</button>
+            <button class="btn small" @click="openFolderPicker" :disabled="busy">文件夹…</button>
           </div>
         </div>
 
@@ -147,5 +148,13 @@ async function save() {
         </button>
       </div>
     </div>
+
+    <FolderPickerDialog
+      v-if="showFolder"
+      :root="folderStart"
+      title="选择补丁文件夹"
+      @picked="onFolderPicked"
+      @close="showFolder = false"
+    />
   </div>
 </template>

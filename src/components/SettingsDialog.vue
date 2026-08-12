@@ -5,6 +5,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "../api";
 import Icon from "./Icon.vue";
 import brandLogo from "../assets/brand-logo.png";
+import FolderPickerDialog from "./FolderPickerDialog.vue";
 import { useCloseOnEscape } from "../composables/useCloseOnEscape";
 
 const props = defineProps<{ modelValue: boolean }>();
@@ -47,9 +48,16 @@ async function browseLE() {
   if (p) lePath.value = p;
 }
 
-async function browseRoot() {
-  const p = await open({ directory: true, multiple: false, title: "默认游戏根目录（仅记录）" });
-  if (p) gameRoot.value = p;
+const folderStart = ref("C:\\");
+const showFolder = ref(false);
+/** 内置轻量目录选择器（原生对话框在巨型目录下会卡死窗口，故不用）。 */
+function openFolderPicker() {
+  folderStart.value = gameRoot.value || "C:\\";
+  showFolder.value = true;
+}
+function onFolderPicked(dir: string) {
+  showFolder.value = false;
+  gameRoot.value = dir;
 }
 
 async function browseUnpack() {
@@ -196,7 +204,7 @@ async function save() {
           <label>默认游戏根目录（可选，仅记录用于快捷扫描）</label>
           <div class="row">
             <input type="text" v-model="gameRoot" placeholder="如 E:\Galgame" />
-            <button class="btn small" @click="browseRoot">浏览</button>
+            <button class="btn small" @click="openFolderPicker">浏览</button>
           </div>
         </div>
         <div class="field">
@@ -262,6 +270,14 @@ async function save() {
         <button class="btn primary" @click="save">保存</button>
       </div>
     </div>
+
+    <FolderPickerDialog
+      v-if="showFolder"
+      :root="folderStart"
+      title="选择默认游戏根目录"
+      @picked="onFolderPicked"
+      @close="showFolder = false"
+    />
   </div>
 </template>
 
