@@ -11,6 +11,7 @@ const state = reactive({
   search: "",
   sort: "recent" as SortKey,
   view: "all" as ViewKey,
+  status: "" as string,
   error: null as string | null,
 });
 
@@ -35,23 +36,31 @@ function applySort(arr: Game[]): Game[] {
 function applySearch(arr: Game[]): Game[] {
   const q = state.search.trim().toLowerCase();
   if (!q) return arr;
-  return arr.filter(
-    (g) => g.title.toLowerCase().includes(q) || g.engine.toLowerCase().includes(q)
+  return arr.filter((g) =>
+    [g.title, g.engine, g.developer ?? "", g.tags.join(" ")]
+      .join(" ")
+      .toLowerCase()
+      .includes(q)
   );
 }
 
 function applyView(arr: Game[]): Game[] {
+  let out = arr;
   switch (state.view) {
     case "favorites":
-      return arr.filter((g) => g.favorite && !g.hidden);
+      out = out.filter((g) => g.favorite && !g.hidden);
+      break;
     case "hidden":
-      return arr.filter((g) => g.hidden);
+      out = out.filter((g) => g.hidden);
+      break;
     default:
-      return arr;
+      break;
   }
+  if (state.status) out = out.filter((g) => g.status === state.status);
+  return out;
 }
 
-/** 当前要展示在封面墙上的列表（已应用搜索 / 视图 / 排序）。 */
+/** 当前要展示在封面墙上的列表（已应用搜索 / 视图 / 状态 / 排序）。 */
 export const visible = computed(() => applySort(applyView(applySearch(raw.value))));
 
 const rawCount = computed(
@@ -88,6 +97,7 @@ export function useLibrary() {
     upsertGame,
     setView: (v: ViewKey) => (state.view = v),
     setSort: (s: SortKey) => (state.sort = s),
+    setStatus: (s: string) => (state.status = s),
     setSearch: (q: string) => (state.search = q),
   };
 }

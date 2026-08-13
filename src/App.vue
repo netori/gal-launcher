@@ -2,12 +2,13 @@
 import { onMounted, reactive, ref } from "vue";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useLibrary } from "./store";
-import { api, type Game, type UpdateInfo } from "./api";
+import { api, type Game, type UpdateInfo, STATUS_META } from "./api";
 
 import GameCard from "./components/GameCard.vue";
 import ScanDialog from "./components/ScanDialog.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
 import ResourceDialog from "./components/ResourceDialog.vue";
+import MissingDialog from "./components/MissingDialog.vue";
 import DetailDrawer from "./components/DetailDrawer.vue";
 import LaunchDialog from "./components/LaunchDialog.vue";
 import Icon from "./components/Icon.vue";
@@ -22,6 +23,26 @@ const selectedGame = ref<Game | null>(null);
 const showScan = ref(false);
 const showSettings = ref(false);
 const showResources = ref(false);
+const showMissing = ref(false);
+
+// 多选模式
+const selectMode = ref(false);
+const selected = ref<Set<number>>(new Set());
+const batchStatus = ref("");
+function toggleSelectMode() {
+  selectMode.value = !selectMode.value;
+  selected.value = new Set();
+  batchStatus.value = "";
+}
+function toggleSelect(game: Game) {
+  const s = new Set(selected.value);
+  if (s.has(game.id)) s.delete(game.id);
+  else s.add(game.id);
+  selected.value = s;
+}
+function clearSelection() {
+  selected.value = new Set();
+}
 
 // 更新提示：非打扰式横幅，启动延迟检查；失败静默
 const updateInfo = ref<UpdateInfo | null>(null);
@@ -124,10 +145,32 @@ function toast(msg: string, type: "ok" | "err" = "ok") {
   }, 2600);
 }
 
+// ---- Android 首启：检测「所有文件访问」权限，未授权时展示引导遮罩 ----
+const isAndroid = /android/i.test(navigator.userAgent);
+const filesAccess = ref<boolean | null>(null);
+const filesAccessHint = ref("");
+async function checkFilesAccess() {
+  try {
+    filesAccess.value = await api.checkFilesAccess();
+    if (filesAccess.value) filesAccessHint.value = "";
+  } catch {
+    filesAccess.value = null;
+  }
+}
+async function requestFilesAccess() {
+  try {
+    await api.requestFilesAccess();
+    filesAccessHint.value = "";
+  } catch (e) {
+    filesAccessHint.value = String(e);
+  }
+}
+
 onMounted(() => {
   lib.refresh();
   // 启动后稍等片刻再查更新，不抢首屏
   window.setTimeout(() => checkForUpdate(), 1500);
+  if (isAndroid) checkFilesAccess();
 });
 
 async function runAction(fn: () => Promise<void>, okMsg?: string) {
@@ -228,25 +271,69 @@ async function openDir(game: Game) {
   }
 }
 
-/** 为所有还没有封面的游戏从 VNDB 批量补封面+元数据。 */
-const coverBusy = ref(false);
-async function fetchCovers() {
-  if (coverBusy.value) return;
-  coverBusy.value = true;
+// ---- 批量操作 ----
+const batchBusy = ref(false);
+
+async function batchSetHidden(hidden: boolean) {
+  const ids = [...selected.value];
+  if (!ids.length) return;
+  batchBusy.value = true;
   try {
-    const r = await api.fetchMissingCovers();
-    await lib.refresh();
-    if (r.updated > 0) toast(`已补全 ${r.updated} 个封面`);
-    else toast("没有需要补封面的游戏了");
-    if (r.failed.length) {
-      toast(`有 ${r.failed.length} 个暂时没匹配上，可在详情里手动搜 VNDB`, "err");
+    for (const id of ids) {
+      const g = await api.setHidden(id, hidden);
+      lib.upsertGame(g);
     }
+    toast(hidden ? `已隐藏 ${ids.length} 个游戏` : `已恢复 ${ids.length} 个游戏`);
+    clearSelection();
   } catch (e) {
     toast(String(e), "err");
   } finally {
-    coverBusy.value = false;
+    batchBusy.value = false;
   }
 }
+
+async function batchSetStatus() {
+  const ids = [...selected.value];
+  if (!ids.length) return;
+  batchBusy.value = true;
+  try {
+    for (const id of ids) {
+      const g = await api.setStatus(id, batchStatus.value);
+      lib.upsertGame(g);
+    }
+    toast(`已更新 ${ids.length} 个游戏的状态`);
+    clearSelection();
+    batchStatus.value = "";
+  } catch (e) {
+    toast(String(e), "err");
+  } finally {
+    batchBusy.value = false;
+  }
+}
+
+function batchRemove() {
+  const n = selected.value.size;
+  if (!n) return;
+  ask({
+    title: "批量移除",
+    msg: `将把 ${n} 个游戏从库里移除（磁盘文件不动）。`,
+    ok: "移除",
+    run: async () => {
+      batchBusy.value = true;
+      try {
+        for (const id of [...selected.value]) await api.removeFromLibrary(id);
+        await lib.refresh();
+        toast(`已移除 ${n} 个游戏`);
+        clearSelection();
+      } catch (e) {
+        toast(String(e), "err");
+      } finally {
+        batchBusy.value = false;
+      }
+    },
+  });
+}
+
 function folderHidden(game: Game, hidden: boolean) {
   runAction(
     async () => await api.setHiddenAttr(game.sourceDir, hidden),
@@ -267,13 +354,16 @@ function removeFromLibrary(game: Game) {
 }
 
 function trashGame(game: Game) {
+  const permanent = isAndroid; // Android 无回收站，删除即永久
   ask({
     title: "删除游戏",
-    msg: `「${game.title}」整个目录将送进回收站。之后可从回收站恢复，但需要重新导入。`,
-    ok: "送回收站",
+    msg: permanent
+      ? `「${game.title}」整个目录将被永久删除（Android 无回收站），不可恢复。`
+      : `「${game.title}」整个目录将送进回收站。之后可从回收站恢复，但需要重新导入。`,
+    ok: permanent ? "永久删除" : "送回收站",
     danger: true,
     run: async () => {
-      await runAction(async () => await api.deleteGame(game.id), "已送回收站");
+      await runAction(async () => await api.deleteGame(game.id), permanent ? "已删除" : "已送回收站");
       await lib.refresh();
     },
   });
@@ -321,15 +411,25 @@ function trashGame(game: Game) {
       <option value="favorite">收藏优先</option>
     </select>
 
+    <select :value="state.status" @change="lib.setStatus(($event.target as HTMLSelectElement).value)">
+      <option value="">全部状态</option>
+      <option v-for="s in STATUS_META.filter((s) => s.key)" :key="s.key" :value="s.key">
+        {{ s.label }}
+      </option>
+    </select>
+
     <div class="spacer"></div>
+    <button class="btn" :class="{ primary: selectMode }" title="多选：批量隐藏 / 改状态 / 移除" @click="toggleSelectMode">
+      <Icon name="check" :size="15" style="margin-right: 2px" /> 多选
+    </button>
+    <button class="btn" title="检测目录已失效的游戏" @click="showMissing = true">
+      <Icon name="eye-off" :size="15" style="margin-right: 2px" /> 失效检测
+    </button>
     <button class="btn icon-btn" title="设置" @click="showSettings = true">
       <Icon name="sliders" :size="16" />
     </button>
     <button class="btn" title="galgame 资源站导航（社区 / 补丁 / 资源站）" @click="showResources = true">
       <Icon name="external-link" :size="15" style="margin-right: 2px" /> 资源站
-    </button>
-    <button class="btn" title="从 VNDB 批量补全缺失封面" :disabled="coverBusy" @click="fetchCovers">
-      <Icon name="image" :size="15" style="margin-right: 2px" /> 补封面
     </button>
     <button class="btn primary" @click="showScan = true">
       <Icon name="plus" :size="15" /> 扫描导入
@@ -364,8 +464,11 @@ function trashGame(game: Game) {
         v-for="(g, i) in visible"
         :key="g.id"
         :game="g"
+        :select-mode="selectMode"
+        :selected="selected.has(g.id)"
         :style="{ '--i': i }"
         @click="handleClick"
+        @select="toggleSelect"
         @launch="handleLaunch"
         @favorite="handleFavorite"
         @hide="handleHide"
@@ -374,6 +477,24 @@ function trashGame(game: Game) {
       />
     </div>
   </main>
+
+  <!-- 批量操作条 -->
+  <Transition name="update">
+    <div v-if="selectMode && selected.size" class="batch-bar">
+      <span class="bb-count">已选 {{ selected.size }} 个</span>
+      <select v-model="batchStatus" style="margin-left: 8px">
+        <option value="" disabled>设为状态…</option>
+        <option v-for="s in STATUS_META" :key="s.key || '_'" :value="s.key">{{ s.label }}</option>
+      </select>
+      <button class="btn small" :disabled="!batchStatus || batchBusy" @click="batchSetStatus">应用状态</button>
+      <div class="sep-v"></div>
+      <button class="btn small" :disabled="batchBusy" @click="batchSetHidden(true)">隐藏</button>
+      <button class="btn small" :disabled="batchBusy" @click="batchSetHidden(false)">恢复显示</button>
+      <button class="btn small danger" :disabled="batchBusy" @click="batchRemove">移除记录</button>
+      <div class="spacer"></div>
+      <button class="btn icon-btn ghost" title="退出多选" @click="toggleSelectMode"><Icon name="close" :size="14" /></button>
+    </div>
+  </Transition>
 
   <!-- 右键菜单 -->
   <template v-if="ctx.game">
@@ -456,6 +577,13 @@ function trashGame(game: Game) {
     <ResourceDialog v-if="showResources" @close="showResources = false" />
   </Transition>
   <Transition name="overlay">
+    <MissingDialog
+      v-if="showMissing"
+      @close="showMissing = false"
+      @removed="lib.refresh()"
+    />
+  </Transition>
+  <Transition name="overlay">
     <LaunchDialog
       v-if="launchPick"
       :game="launchPick.game"
@@ -485,6 +613,25 @@ function trashGame(game: Game) {
         <button class="btn icon-btn ghost" title="暂时关闭（下次启动再看）" @click="updateBannerOpen = false">
           <Icon name="close" :size="14" />
         </button>
+      </div>
+    </div>
+  </Transition>
+
+  <!-- Android 首启权限引导遮罩 -->
+  <Transition name="overlay">
+    <div v-if="isAndroid && filesAccess === false" class="perm-gate">
+      <div class="perm-card">
+        <img class="glyph-logo" :src="brandLogo" alt="GAL 启动器" draggable="false" />
+        <h2>需要「所有文件访问」权限</h2>
+        <p class="perm-desc">
+          GAL 启动器需要读取手机上的游戏目录，才能扫描识别引擎、管理补丁与解包资源。
+          请在本应用的「权限 → 所有文件访问」中开启。
+        </p>
+        <button class="btn primary" @click="requestFilesAccess">
+          <Icon name="sliders" :size="15" /> 去开启权限
+        </button>
+        <p class="hint" v-if="filesAccessHint">{{ filesAccessHint }}</p>
+        <button class="btn ghost" @click="checkFilesAccess">我已开启，重新检测</button>
       </div>
     </div>
   </Transition>

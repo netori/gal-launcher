@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from "vue";
-import { api, engineNeedsLocale, type Game } from "../api";
+import { onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { api, engineNeedsLocale, statusColor, statusLabel, type Game } from "../api";
 import Icon from "./Icon.vue";
 
-const props = defineProps<{ game: Game }>();
+const props = defineProps<{ game: Game; selectMode?: boolean; selected?: boolean }>();
 const emit = defineEmits<{
   click: [game: Game];
+  select: [game: Game];
   launch: [game: Game, locale: boolean];
   favorite: [game: Game];
   hide: [game: Game];
@@ -13,25 +14,51 @@ const emit = defineEmits<{
   context: [game: Game, e: MouseEvent];
 }>();
 
-// 模块级图片缓存：同一张封面只读盘一次。
+// 模块级图片缓存：同一张封面只读盘一次（缩略图，体积小）。
 const coverCache = new Map<string, string>();
 const src = ref("");
 let cancelled = false;
+let io: IntersectionObserver | null = null;
+const rootEl = ref<HTMLElement | null>(null);
 
-onBeforeUnmount(() => (cancelled = true));
+onBeforeUnmount(() => {
+  cancelled = true;
+  io?.disconnect();
+});
 
-onMounted(loadCover);
-
-async function loadCover() {
+onMounted(() => {
   const p = props.game.coverPath;
   if (!p) return;
   if (coverCache.has(p)) {
     src.value = coverCache.get(p)!;
     return;
   }
-  src.value = "";
+  if (typeof IntersectionObserver === "undefined") {
+    loadCover();
+    return;
+  }
+  io = new IntersectionObserver(
+    (entries) => {
+      for (const en of entries) {
+        if (en.isIntersecting) {
+          loadCover();
+          io?.disconnect();
+          io = null;
+          break;
+        }
+      }
+    },
+    { rootMargin: "300px" }
+  );
+  if (rootEl.value) io.observe(rootEl.value);
+  else loadCover();
+});
+
+async function loadCover() {
+  const p = props.game.coverPath;
+  if (!p || src.value) return;
   try {
-    const uri = await api.readImage(p);
+    const uri = await api.readCover(p, 400);
     if (cancelled) return;
     coverCache.set(p, uri);
     src.value = uri;
@@ -39,6 +66,20 @@ async function loadCover() {
     /* 失败就显示占位图 */
   }
 }
+
+// 详情抽屉里「更换封面」后 coverPath 变化，key 不变的卡片实例不会重新挂载，这里手动重载。
+watch(
+  () => props.game.coverPath,
+  (p) => {
+    src.value = "";
+    if (!p) return;
+    if (coverCache.has(p)) {
+      src.value = coverCache.get(p)!;
+      return;
+    }
+    loadCover();
+  }
+);
 
 function fmt(secs: number): string {
   const h = Math.floor(secs / 3600);
@@ -53,6 +94,11 @@ function onMove(e: MouseEvent) {
   const r = el.getBoundingClientRect();
   el.style.setProperty("--mx", `${((e.clientX - r.left) / r.width) * 100}%`);
   el.style.setProperty("--my", `${((e.clientY - r.top) / r.height) * 100}%`);
+}
+
+function onCardClick() {
+  if (props.selectMode) emit("select", props.game);
+  else emit("click", props.game);
 }
 </script>
 
@@ -119,19 +165,87 @@ function onMove(e: MouseEvent) {
 .del:hover {
   filter: brightness(1.35);
 }
+.engine-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(22, 16, 11, 0.62);
+  backdrop-filter: blur(4px);
+  color: rgba(255, 250, 244, 0.82);
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.status-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+}
+.playtime {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(22, 16, 11, 0.6);
+  backdrop-filter: blur(4px);
+  color: rgba(255, 250, 244, 0.82);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+.sel-check {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 5;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  border: 2px solid rgba(255, 250, 244, 0.7);
+  background: rgba(22, 16, 11, 0.55);
+  display: grid;
+  place-items: center;
+  color: var(--accent-ink);
+  transition: background-color var(--d-fast) var(--ease-out), border-color var(--d-fast) var(--ease-out);
+}
+.sel-check.on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.card.is-selected {
+  border-color: var(--accent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 250, 244, 0.06),
+    0 0 0 2px rgba(217, 126, 61, 0.45),
+    0 10px 24px rgba(20, 12, 6, 0.38);
+}
 </style>
 
 <template>
   <article
+    ref="rootEl"
     class="card"
-    :class="{ 'fav-on': game.favorite }"
+    :class="{ 'fav-on': game.favorite, 'is-selected': selected }"
     tabindex="0"
-    @click="emit('click', game)"
-    @keydown.enter="emit('click', game)"
+    @click="onCardClick"
+    @keydown.enter="onCardClick"
     @contextmenu.prevent="emit('context', game, $event)"
     @mousemove="onMove"
   >
-    <img v-if="game.coverPath && src" class="cover" :src="src" :alt="game.title" loading="lazy" />
+    <span v-if="selectMode" class="sel-check" :class="{ on: selected }">
+      <Icon v-if="selected" name="check" :size="14" />
+    </span>
+    <img v-if="src" class="cover" :src="src" :alt="game.title" />
     <div v-else class="placeholder">
       <span class="ph-letter">{{ game.title.charAt(0) }}</span>
       <span class="ph-engine" v-if="game.engine">{{ game.engine }}</span>
@@ -139,6 +253,12 @@ function onMove(e: MouseEvent) {
     <div class="scrim"></div>
 
     <div class="hidden-tag" v-if="game.hidden">已隐藏</div>
+    <span
+      v-if="game.status && !game.hidden"
+      class="status-badge"
+      :style="{ background: statusColor(game.status) }"
+      >{{ statusLabel(game.status) }}</span
+    >
 
     <div class="topline">
       <span class="rating-badge" v-if="game.rating != null">★ {{ game.rating.toFixed(1) }}</span>
@@ -178,13 +298,18 @@ function onMove(e: MouseEvent) {
 
     <div class="info">
       <h3>{{ game.title }}</h3>
-      <div class="engine" v-if="game.engine">{{ game.engine }}</div>
+      <div class="row" style="gap: 6px; margin-top: 5px; justify-content: space-between">
+        <span class="engine-chip" v-if="game.engine">{{ game.engine }}</span>
+        <span class="playtime" v-if="game.totalSeconds > 0">
+          <Icon name="play" :size="10" /> {{ fmt(game.totalSeconds) }}
+        </span>
+      </div>
       <div class="meta">
         <template v-if="game.lastPlayed">
           上次 {{ new Date(game.lastPlayed * 1000).toLocaleDateString("zh-CN") }}
         </template>
         <template v-else>未游玩</template>
-        <template v-if="game.totalSeconds > 0"> · {{ fmt(game.totalSeconds) }} · {{ game.playCount }} 次</template>
+        <template v-if="game.playCount > 0"> · {{ game.playCount }} 次</template>
       </div>
     </div>
   </article>

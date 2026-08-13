@@ -1,6 +1,6 @@
 [package]
 name = "gal-launcher"
-version = "0.1.0"
+version = "0.1.1"
 description = "GAL 启动器 —— 本地 galgame 图书馆管理工具"
 authors = ["you"]
 edition = "2021"
@@ -21,10 +21,10 @@ serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 walkdir = "2"
 regex = "1"
-trash = "5"
 ureq = { version = "2", features = ["json"] }
 zip = { version = "8", default-features = false, features = ["deflate"] }
 png = "0.17"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "bmp", "gif"] }
 xp3 = "0.4"
 tokio = { version = "1", features = ["rt", "fs", "io-util"] }
 sha1 = "0.10"
@@ -32,3 +32,7 @@ windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
   "Win32_Storage_FileSystem",
 ] }
+
+# trash 只支持桌面平台（Windows/macOS/Linux）；Android 由 commands.rs 走直接删除
+[target.'cfg(windows)'.dependencies]
+trash = "5"

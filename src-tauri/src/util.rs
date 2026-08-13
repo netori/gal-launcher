@@ -49,6 +49,51 @@ pub fn read_image_data_uri(path: &str) -> Result<String, String> {
     Ok(format!("data:{mime};base64,{}", encode_base64(&data)))
 }
 
+/// 生成封面缩略图并返回 data URI（带磁盘缓存）。
+///
+/// 封面墙用，避免把整张原图 base64 进内存。缩略图统一编码成 JPEG，
+/// 最长边 `max_side`；缓存到 `thumbs_dir`，key = sha1(path|mtime|size|max_side)，
+/// 源文件一旦变化（mtime/size 不同）自然生成新 key，旧缓存成为孤儿文件。
+pub fn read_cover_thumb(path: &str, thumbs_dir: &Path, max_side: u32) -> Result<String, String> {
+    let src = Path::new(path);
+    let meta = std::fs::metadata(src).map_err(|e| format!("读取封面失败: {e}"))?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let key = format!("{path}|{mtime}|{}|{max_side}", meta.len());
+    let cache = thumbs_dir.join(format!("{}.jpg", sha1_hex(&key)));
+
+    if cache.is_file() {
+        if let Ok(data) = std::fs::read(&cache) {
+            return Ok(format!("data:image/jpeg;base64,{}", encode_base64(&data)));
+        }
+    }
+
+    let img = image::open(src).map_err(|e| format!("解码封面失败: {e}"))?;
+    let thumb = img.thumbnail(max_side, max_side);
+    let mut buf = std::io::Cursor::new(Vec::new());
+    thumb
+        .write_to(&mut buf, image::ImageFormat::Jpeg)
+        .map_err(|e| format!("生成缩略图失败: {e}"))?;
+    let bytes = buf.into_inner();
+
+    if let Some(parent) = cache.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&cache, &bytes);
+    Ok(format!("data:image/jpeg;base64,{}", encode_base64(&bytes)))
+}
+
+fn sha1_hex(s: &str) -> String {
+    use sha1::{Digest, Sha1};
+    let mut hasher = Sha1::new();
+    hasher.update(s.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
 fn encode_base64(bytes: &[u8]) -> String {
     const TBL: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
