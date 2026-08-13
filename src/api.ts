@@ -78,6 +78,18 @@ export interface UpdateInfo {
   downloadUrl: string | null;
 }
 
+export interface FsEntry {
+  name: string;
+  isDir: boolean;
+  size: number;
+  modified: number;
+}
+
+export interface DirListing {
+  entries: FsEntry[];
+  truncated: boolean;
+}
+
 export const api = {
   scanDirectory: (root: string) => invoke<Candidate[]>("scan_directory", { root }),
   importGames: (candidates: Candidate[]) =>
@@ -168,6 +180,12 @@ export const api = {
   getAuthorizedRoots: () => invoke<string[]>("get_authorized_roots"),
   addAuthorizedRoot: (path: string) => invoke<void>("add_authorized_root", { path }),
   removeAuthorizedRoot: (path: string) => invoke<void>("remove_authorized_root", { path }),
+
+  // 文件选择器
+  listDir: (path: string, exts?: string[]) =>
+    invoke<DirListing>("list_dir", { path, exts }),
+  listDrives: () => invoke<string[]>("list_drives"),
+  createDir: (path: string) => invoke<void>("create_dir", { path }),
 };
 
 export interface ArchiveInfo {

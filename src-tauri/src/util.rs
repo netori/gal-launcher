@@ -3,12 +3,53 @@
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::models::{DirListing, FsEntry};
+
 /// 当前 Unix 时间戳（秒）。
 pub fn now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// 归一化路径，用于去重比较：优先 canonicalize（解析 junction/符号链接、
+/// 还原磁盘真实大小写），失败则退化为字符串级归一化（统一分隔符、去尾部斜杠）。
+/// Windows 上折叠大小写（NTFS 大小写不敏感，避免同一目录因大小写不同被重复导入）。
+pub fn norm_path(path: &str) -> String {
+    let t = path.trim();
+    if t.is_empty() {
+        return String::new();
+    }
+    let resolved = std::fs::canonicalize(t)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| t.to_string());
+    #[cfg(windows)]
+    {
+        let mut s = resolved.replace('/', "\\");
+        while s.len() > 3 && s.ends_with('\\') {
+            s.pop();
+        }
+        s.to_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        resolved
+    }
+}
+
+/// child 是否等于 parent，或是 parent 的子目录（两者都应先 norm_path）。
+/// 按路径组件边界比较，避免 "Game" 误判为 "Game2" 的祖先。
+pub fn is_same_or_descendant(child: &str, parent: &str) -> bool {
+    if child == parent {
+        return true;
+    }
+    #[cfg(windows)]
+    let sep = "\\";
+    #[cfg(not(windows))]
+    let sep = "/";
+    let p = parent.trim_end_matches(['/', '\\']);
+    child.starts_with(&format!("{p}{sep}"))
 }
 
 /// 把秒格式化为 "xh ym" 形式。
@@ -158,6 +199,82 @@ pub fn set_hidden_attr(path: &str, hidden: bool) -> Result<(), String> {
 #[cfg(not(windows))]
 pub fn set_hidden_attr(_path: &str, _hidden: bool) -> Result<(), String> {
     Err("当前平台不支持系统级隐藏".into())
+}
+
+/// 列出一个目录的内容（子目录 + 文件），供内置文件选择器用。
+/// `exts` 指定时只返回这些扩展名的文件（如 ["exe"]，不设文件数上限）；
+/// 不指定时返回所有文件但最多 `FILE_CAP` 个，超出部分通过 `truncated` 告知前端。
+pub fn list_dir(path: &str, exts: Option<&[String]>) -> Result<DirListing, String> {
+    const FILE_CAP: usize = 500;
+    let rd = std::fs::read_dir(path).map_err(|e| format!("无法读取目录: {e}"))?;
+    let wanted: Option<Vec<String>> = exts.map(|v| {
+        v.iter()
+            .map(|e| e.trim().trim_start_matches('.').to_ascii_lowercase())
+            .filter(|e| !e.is_empty())
+            .collect()
+    });
+
+    let mut entries = Vec::new();
+    let mut files_seen = 0usize;
+    let mut truncated = false;
+    for e in rd.filter_map(|e| e.ok()) {
+        let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let name = e.file_name().to_string_lossy().into_owned();
+
+        if !is_dir {
+            if let Some(w) = &wanted {
+                let ext = name.rsplit('.').next().map(|s| s.to_ascii_lowercase()).unwrap_or_default();
+                if !w.iter().any(|x| *x == ext) {
+                    continue;
+                }
+            } else {
+                if files_seen >= FILE_CAP {
+                    truncated = true;
+                    continue;
+                }
+                files_seen += 1;
+            }
+        }
+
+        let meta = e.metadata().ok();
+        let size = if is_dir {
+            0
+        } else {
+            meta.as_ref().map(|m| m.len() as i64).unwrap_or(0)
+        };
+        let modified = meta
+            .as_ref()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        entries.push(FsEntry {
+            name,
+            is_dir,
+            size,
+            modified,
+        });
+    }
+    Ok(DirListing { entries, truncated })
+}
+
+/// 列出可用的磁盘根目录（如 "C:\\"）。仅 Windows 有意义。
+#[cfg(windows)]
+pub fn list_drives() -> Vec<String> {
+    // 跳过软驱 A:/B:，避免空软驱上 metadata 卡顿；从 C 开始枚举已存在的盘符。
+    let mut out = Vec::new();
+    for c in 'C'..='Z' {
+        let root = format!("{c}:\\");
+        if Path::new(&root).exists() {
+            out.push(root);
+        }
+    }
+    out
+}
+
+#[cfg(not(windows))]
+pub fn list_drives() -> Vec<String> {
+    Vec::new()
 }
 
 #[cfg(test)]

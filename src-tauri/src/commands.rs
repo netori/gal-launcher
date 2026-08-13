@@ -44,7 +44,10 @@ pub fn scan_directory(root: String, state: State<AppState>) -> CmdResult<Vec<Can
         let rows = stmt
             .query_map([], |r| r.get::<_, String>(0))
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?
+        let raw: std::collections::HashSet<String> =
+            rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?;
+        // 归一化后比较，避免大小写/分隔符/盘符差异导致误判为「未收录」
+        raw.into_iter().map(|d| util::norm_path(&d)).collect()
     };
     Ok(scanner::scan_directory(path, &imported))
 }
@@ -76,10 +79,17 @@ pub fn import_games(candidates: Vec<Candidate>, state: State<AppState>) -> CmdRe
     }
 
     let mut db = lock(&state);
+    // 一次性取回已收录目录的归一化键，导入时做「相等 + 子目录包含」双重去重。
+    let existing: Vec<String> = db::list_source_dirs(&db)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|d| util::norm_path(&d))
+        .collect();
     let mut imported = 0usize;
     for (title, src, launch, candidates, engine, cover, files) in payloads {
-        if db::is_imported(&db, &src) {
-            continue; // 已收录（避免与扫描结果之间的竞态）
+        let src_norm = util::norm_path(&src);
+        if existing.iter().any(|e| util::is_same_or_descendant(&src_norm, e)) {
+            continue; // 已收录（或已在某已收录目录内部）
         }
         let id = match db::insert_game(
             &mut db,
@@ -539,35 +549,26 @@ fn reveal_in_explorer_impl(_path: &str) -> CmdResult<()> {
     Err("此平台不支持打开系统文件管理器".into())
 }
 
-/// 枚举目录的直接子目录名（供内置文件选择器用；纯 IO，不触碰数据库锁）。
+/// 列出目录内容（子目录 + 文件），供内置文件选择器用。
+/// `exts` 指定时只返回匹配扩展名的文件；不指定返回所有文件（最多 500 个，超出见 truncated）。
 #[tauri::command]
-pub fn list_directory(path: String) -> CmdResult<Vec<String>> {
-    let mut dirs = Vec::new();
-    for e in std::fs::read_dir(Path::new(&path)).map_err(|e| e.to_string())? {
-        let e = e.map_err(|e| e.to_string())?;
-        if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            dirs.push(e.file_name().to_string_lossy().into_owned());
-        }
-    }
-    dirs.sort();
-    Ok(dirs)
+pub fn list_dir(path: String, exts: Option<Vec<String>>) -> CmdResult<crate::models::DirListing> {
+    util::list_dir(&path, exts.as_deref())
 }
 
-/// 枚举目录的直接 *.exe 文件名（供内置文件选择器用）。
+/// 列出可用的磁盘根目录（如 "C:\\"）。仅 Windows 有意义，其它平台返回空。
 #[tauri::command]
-pub fn list_exe_files(path: String) -> CmdResult<Vec<String>> {
-    let mut exes = Vec::new();
-    for e in std::fs::read_dir(Path::new(&path)).map_err(|e| e.to_string())? {
-        let e = e.map_err(|e| e.to_string())?;
-        if e.file_type().map(|t| t.is_file()).unwrap_or(false) {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if name.to_ascii_lowercase().ends_with(".exe") {
-                exes.push(name);
-            }
-        }
+pub fn list_drives() -> Vec<String> {
+    util::list_drives()
+}
+
+/// 在指定路径下新建目录（供文件选择器的「新建文件夹」）。
+#[tauri::command]
+pub fn create_dir(path: String) -> CmdResult<()> {
+    if path.trim().is_empty() {
+        return Err("路径为空".into());
     }
-    exes.sort();
-    Ok(exes)
+    std::fs::create_dir_all(&path).map_err(|e| format!("创建目录失败: {e}"))
 }
 
 // ---------------- 补丁管理 ----------------

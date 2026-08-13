@@ -350,15 +350,11 @@ pub fn list_files(conn: &Connection, game_id: i64) -> Result<Vec<FileInfo>> {
     rows.collect()
 }
 
-/// 判断某目录是否已被收录。
-pub fn is_imported(conn: &Connection, dir: &str) -> bool {
-    conn.query_row(
-        "SELECT count(*) FROM games WHERE source_dir = ?1",
-        params![dir],
-        |r| r.get::<_, i64>(0),
-    )
-    .map(|c| c > 0)
-    .unwrap_or(false)
+/// 列出所有游戏目录（用于导入时去重比较）。
+pub fn list_source_dirs(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT source_dir FROM games")?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    rows.collect()
 }
 
 pub fn get_setting(conn: &Connection, key: &str) -> Option<String> {
