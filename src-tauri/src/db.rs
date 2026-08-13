@@ -5,13 +5,39 @@ use std::path::Path;
 
 use crate::models::{FileInfo, Game, Patch};
 
-/// 一次性初始化数据库连接（建库 + 建表）。
+/// 一次性初始化数据库连接（建库 + 建表 + 迁移）。
 pub fn init(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.execute_batch(SCHEMA)?;
     ensure_columns(&conn)?;
+    migrate(&conn)?;
+    reap_orphan_sessions(&conn)?;
     Ok(conn)
+}
+
+/// 用 PRAGMA user_version 记录 schema 版本。列补齐由 ensure_columns 幂等完成，
+/// 这里只负责把版本号推进到最新，为将来「按版本增量迁移」留好轨道。
+const SCHEMA_VERSION: i64 = 2;
+
+fn migrate(conn: &Connection) -> Result<()> {
+    let ver: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap_or(0);
+    if ver < SCHEMA_VERSION {
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    }
+    Ok(())
+}
+
+/// 启动时把上次进程异常退出遗留的「未结束会话」补齐（时长按 0 记），
+/// 避免 play_sessions 永远停在 ended_at IS NULL 的死数据。
+fn reap_orphan_sessions(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "UPDATE play_sessions SET ended_at = started_at WHERE ended_at IS NULL",
+        [],
+    )?;
+    Ok(())
 }
 
 /// 老库补充新列（CREATE TABLE IF NOT EXISTS 不会给已存在的表加列）。
@@ -29,6 +55,7 @@ fn ensure_columns(conn: &Connection) -> Result<()> {
         ("developer", "TEXT"),
         ("released", "TEXT"),
         ("length_minutes", "INTEGER"),
+        ("status", "TEXT NOT NULL DEFAULT ''"),
     ];
     for (name, ddl) in additions {
         if !existing.iter().any(|c| c == name) {
@@ -61,6 +88,7 @@ CREATE TABLE IF NOT EXISTS games (
   play_count   INTEGER NOT NULL DEFAULT 0,
   hidden       INTEGER NOT NULL DEFAULT 0,
   favorite     INTEGER NOT NULL DEFAULT 0,
+  status       TEXT NOT NULL DEFAULT '',
   scanned_at   INTEGER NOT NULL DEFAULT 0
 );
 
@@ -104,13 +132,19 @@ CREATE TABLE IF NOT EXISTS patch_backups (
   backup_path TEXT NOT NULL
 );
 
+-- 移动端已授权的游戏根目录（All-Files-Access 下由用户手动登记，供扫描/导出选根用）
+CREATE TABLE IF NOT EXISTS authorized_roots (
+  path     TEXT PRIMARY KEY,
+  added_at INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_game_files_game ON game_files(game_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_game ON play_sessions(game_id);
 CREATE INDEX IF NOT EXISTS idx_patches_game ON patches(game_id);
 CREATE INDEX IF NOT EXISTS idx_pbackups_patch ON patch_backups(patch_id);
 "#;
 
-const GAME_COLS: &str = "id,title,source_dir,launch_path,launch_candidates,launch_set,engine,cover_path,description,rating,vndb_id,tags,developer,released,length_minutes,added_at,last_played,total_seconds,play_count,hidden,favorite";
+const GAME_COLS: &str = "id,title,source_dir,launch_path,launch_candidates,launch_set,engine,cover_path,description,rating,vndb_id,tags,developer,released,length_minutes,added_at,last_played,total_seconds,play_count,hidden,favorite,status";
 
 fn parse_strings(raw: &str) -> Vec<String> {
     serde_json::from_str(raw).unwrap_or_default()
@@ -139,6 +173,7 @@ fn row_to_game(r: &rusqlite::Row) -> Result<Game> {
         play_count: r.get(18)?,
         hidden: r.get::<_, i64>(19)? != 0,
         favorite: r.get::<_, i64>(20)? != 0,
+        status: r.get(21)?,
     })
 }
 
@@ -250,6 +285,11 @@ pub fn set_title(conn: &Connection, id: i64, title: &str) -> Result<Game> {
     get_game(conn, id)
 }
 
+pub fn set_status(conn: &Connection, id: i64, status: &str) -> Result<Game> {
+    conn.execute("UPDATE games SET status = ?2 WHERE id = ?1", params![id, status])?;
+    get_game(conn, id)
+}
+
 pub fn set_hidden(conn: &Connection, id: i64, hidden: bool) -> Result<Game> {
     conn.execute("UPDATE games SET hidden = ?2 WHERE id = ?1", params![id, hidden as i64])?;
     get_game(conn, id)
@@ -310,15 +350,11 @@ pub fn list_files(conn: &Connection, game_id: i64) -> Result<Vec<FileInfo>> {
     rows.collect()
 }
 
-/// 判断某目录是否已被收录。
-pub fn is_imported(conn: &Connection, dir: &str) -> bool {
-    conn.query_row(
-        "SELECT count(*) FROM games WHERE source_dir = ?1",
-        params![dir],
-        |r| r.get::<_, i64>(0),
-    )
-    .map(|c| c > 0)
-    .unwrap_or(false)
+/// 列出所有游戏目录（用于导入时去重比较）。
+pub fn list_source_dirs(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT source_dir FROM games")?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    rows.collect()
 }
 
 pub fn get_setting(conn: &Connection, key: &str) -> Option<String> {
@@ -439,5 +475,29 @@ pub fn clear_patch_backups(conn: &Connection, patch_id: i64) -> Result<()> {
 
 pub fn delete_patch(conn: &Connection, id: i64) -> Result<()> {
     conn.execute("DELETE FROM patches WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
+// ---------------- 移动端授权根目录 ----------------
+
+/// 登记一个已授权的游戏根目录（All-Files-Access 下的用户选择）。
+pub fn add_authorized_root(conn: &Connection, path: &str) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO authorized_roots (path, added_at) VALUES (?1, ?2)",
+        params![path, crate::util::now_secs()],
+    )?;
+    Ok(())
+}
+
+/// 列出已授权的游戏根目录。
+pub fn list_authorized_roots(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT path FROM authorized_roots ORDER BY added_at")?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    rows.collect()
+}
+
+/// 移除一个已授权根目录。
+pub fn remove_authorized_root(conn: &Connection, path: &str) -> Result<()> {
+    conn.execute("DELETE FROM authorized_roots WHERE path = ?1", params![path])?;
     Ok(())
 }

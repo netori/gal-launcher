@@ -1,14 +1,18 @@
+#[cfg(target_os = "android")]
+mod android;
 mod asset;
 mod backup;
 mod commands;
 mod db;
 mod esc;
 mod ge;
+#[cfg(target_os = "windows")]
 mod launcher;
 mod models;
 mod nsa;
 mod pac;
 mod patcher;
+mod platform_fs;
 mod scanner;
 mod util;
 mod vndb;
@@ -39,6 +43,7 @@ pub fn run() {
             commands::scan_directory,
             commands::import_games,
             commands::list_games,
+            commands::check_missing,
             commands::get_game_files,
             commands::toggle_favorite,
             commands::set_hidden,
@@ -46,6 +51,8 @@ pub fn run() {
             commands::delete_game,
             commands::set_hidden_attr,
             commands::read_image,
+            commands::read_cover,
+            commands::set_cover,
             commands::set_launch_file,
             commands::launch_game,
             commands::save_setting,
@@ -53,10 +60,12 @@ pub fn run() {
             commands::search_vndb,
             commands::apply_vndb_metadata,
             commands::set_game_title,
+            commands::set_status,
             commands::fetch_missing_covers,
             commands::reveal_in_explorer,
-            commands::list_directory,
-            commands::list_exe_files,
+            commands::list_dir,
+            commands::list_drives,
+            commands::create_dir,
             commands::add_patch,
             commands::list_patches,
             commands::install_patch,
@@ -72,6 +81,11 @@ pub fn run() {
             commands::import_backup,
             commands::check_update,
             commands::dismiss_update,
+            commands::check_files_access,
+            commands::request_all_files_access,
+            commands::get_authorized_roots,
+            commands::add_authorized_root,
+            commands::remove_authorized_root,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

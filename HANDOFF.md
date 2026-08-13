@@ -62,6 +62,7 @@ VNDB 元数据补全 → 汉化/R18 补丁管理 → **内置解包**（XP3/PFS/
 - **键盘支持**：新增 `src/composables/useCloseOnEscape.ts`（capture + stopImmediatePropagation + `active` 谓词，子对话框先注册能挡住父抽屉的 Esc，避免连关两层）；所有模态/抽屉/右键菜单/确认框按 Esc 关闭；封面墙 `←/→/↑/↓` 移动焦点（焦点在卡片上时，Enter 打开）
 - **emoji → SVG**：LaunchDialog「📁」、PickExeDialog 目录行「📁」、App 空结果「🔍」全换 Icon 组件（新增 `upload`/`download` 两个描边图标）
 - **整库备份/恢复**：新增 `src-tauri/src/backup.rs`（`export`/`restore`，2 个单测）；备份 zip = VACUUM INTO 的 db 一致快照 + covers/ + backups/（补丁备份），**排除可再生的 assets/ 解包缓存**；恢复先解压到 staging → 校验 games 表 → 热切换连接（内存连接换下旧句柄 → 替换文件 → `db::init` 重开，兼容老库补列）；命令 `export_backup` / `import_backup`，设置页新增「整库备份/恢复」区块，恢复后 App 刷新库
+- **内置目录选择器**：新增 `FolderPickerDialog.vue`（复用 `list_directory` 轻量列子目录，crumb/上级/粘贴路径/「选择此目录」确认，Esc 关闭），替代原生「选择文件夹」对话框——原生目录对话框在巨型目录下会卡死窗口（这是启动 exe 选择早就换内置选择器的同款问题）。已替换三处入口：**扫描根目录**（ScanDialog，起始目录取设置里 game_root，无则 C:\）、**设置默认游戏根目录**（SettingsDialog）、**补丁文件夹**（PatchDialog，起始于游戏目录）。选 Zip/Exe 仍走原生对话框（小型文件不受影响）
 
 ## 5. ⚠️ 重点交接：logo 已全部落地 + UI 复杂度已提升
 
@@ -144,3 +145,40 @@ VNDB 元数据补全 → 汉化/R18 补丁管理 → **内置解包**（XP3/PFS/
   4. 旧版用户下次启动即收到左上横幅；`不再提示` 只针对该版本，发新版本会再次提示
 - **国内网络注意**：`api.github.com` 可能不稳定，更新检查会静默失败不影响使用；资源站导航里 2DFan 用的是大陆中转域名（fan2d.top）
 - **⚠️ uploads.github.com 曾被 DNS 污染导致无法上传 release 资产**：全域名曾指向代理 IP 172.28.255.154（Clash 类工具 rules 没覆盖该域 → 直连 DNS NXDOMAIN），已通过开代理解决，**v0.1.0 release 的两个安装包附件已上传成功**。若再遇「no such host」，多半是代理规则又漏了该域或代理没开。首个 v0.1.0 release 已建且带完整资产
+
+## 12. Android 移植（M0 骨架已完成，2026-08-12）
+
+**状态**：`tauri android init` 生成 `src-tauri/gen/android/`（gitignore）；Rust 后端 `cargo check --target aarch64-linux-android` 通过；`npx tauri android build --debug --target aarch64 --apk` 出包成功（`src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk`）。**真机跑通待做**（需连接开 USB 调试的手机或建 AVD）。详细移植计划与提示词见 `docs/android-port-prompt.md` 和 `docs/` 下调研笔记。
+
+**本机环境（必须的坑）**：
+- Rust targets 已装：`aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android`
+- Android SDK：`C:\Users\20905\AppData\Local\Android\Sdk`（NDK 26.1.10909125 + cmdline-tools 已装；`ANDROID_HOME`/`ANDROID_SDK_ROOT`/`NDK_HOME` 未写进系统，构建时手动 export）
+- **JAVA 用 Android Studio 自带 JBR 21**（`C:\Program Files\Android\Android Studio\jbr`），不要用系统 JDK 25（AGP/Gradle 不兼容）
+- **Windows「开发人员模式」已开启**（注册表 `HKLM\...\AppModelUnlock\AllowDevelopmentWithoutDevLicense=1`）：tauri 把 .so 符号链接进 jniLibs 需要 `SeCreateSymbolicLinkPrivilege`，不开必失败
+- Gradle 8.14.3 已手动装进 `~/.gradle/wrapper/dists/gradle-8.14.3-bin/cv11ve7ro1n3o1j4so8xd9n66/`（wrapper 下载时 Java TLS 证书校验失败，用 curl 拉 zip 手动解压+写 `.ok` 标记绕过；重装系统后需重做）
+
+**中文路径 workaround（关键）**：
+- 项目在 `E:\开发项目\GAL启动器`（非 ASCII）→ Windows 的 clang/lld 响应文件按系统码页(GBK)转码，链接 100% 失败（`ld.lld: cannot find ... 开发项目...`）
+- 解法：根目录 + `src-tauri/.cargo/config.toml` 设 `[build] target-dir = "C:/gal-build/target"`（纯 ASCII，已 gitignore）。**cargo 沿当前工作目录向上找配置**，所以两个位置都要放（tauri-cli 顶层 cargo 和 gradle 内嵌 cargo 的 CWD 不同）
+- AGP 还有一道路径检查：`src-tauri/gen/android/gradle.properties` 加了 `android.overridePathCheck=true`。⚠️ `gen/` 被 gitignore，每次 `tauri android init` 重生成后都要重加
+- ⚠️ **副作用**：`.cargo/config.toml` 的 `[build] target-dir` 对桌面构建同样生效 → 桌面 `npm run tauri build` 的产物（含 NSIS/MSI）会落在 `C:/gal-build/target/release/bundle/`，**不再是** `src-tauri/target/release/bundle/`。若要让桌面产物回到原位，临时移开 `.cargo/config.toml` 或用 `CARGO_TARGET_DIR` 覆盖 env 即可（Android 构建则仍需要它）
+
+**构建命令**（每次都要 export 环境）：
+```bash
+export JAVA_HOME="C:/Program Files/Android/Android Studio/jbr"
+export ANDROID_HOME="C:/Users/20905/AppData/Local/Android/Sdk"
+export ANDROID_SDK_ROOT="$ANDROID_HOME"
+export NDK_HOME="C:/Users/20905/AppData/Local/Android/Sdk/ndk/26.1.10909125"
+npx tauri android build --debug --target aarch64 --apk --ci   # debug 单 ABI
+npx tauri android build --target aarch64 --apk --aab --ci     # release（需先配签名）
+```
+
+**M1 已完成的代码改动**：
+- **cfg 隔离**：`launcher.rs` / `reveal_in_explorer` / `search_unpack_tools` / `patcher::run_installer` 全部 `#[cfg(target_os="windows")]`，移动端给降级实现（`launch_game_impl` 移动端返回"待 M2"、explorer 返回不支持、unpack_tools 返回空、installer 返回不支持）
+- `trash` 改 `[target.'cfg(windows)'.dependencies]` + `delete_game` 拆 `delete_on_disk`（Android=`remove_dir_all` 永久删；App.vue 确认框文案已按 `isAndroid` 区分「永久删除/送回收站」）
+- 新增 `authorized_roots` 表 + `get/add/remove_authorized_root` 命令；`check_files_access` / `request_all_files_access` 命令；`platform_fs`/`android` 两个新模块
+- 前端：api.ts 加 5 个命令、App.vue 加首启权限引导遮罩 `.perm-gate`
+
+**M1 已知降级点（重要）**：
+- **无 JNI 桥**：「去开启权限」按钮只展示引导文案。原因：tauri 2 的 JNI 上下文（`run_on_android_context` / `RuntimeOrDispatch`）是 `pub(crate) mod sealed`，应用代码拿不到；公开通道只有插件系统的 `register_android_plugin`（需写 Kotlin Plugin 子类 + Rust 插件，工作量大）。想要「一键跳设置」以后走这条插件化路线。
+- `check_files_access` 用「能否往 `/storage/emulated/0` 写探针目录」探测：Android 11+ 未授权时原始路径写入被拒；但 **Android 10 及以下无此权限模型会误判为未授权**（2026 年占比极低，可接受）。

@@ -47,6 +47,8 @@ pub struct Game {
     pub play_count: i64,
     pub hidden: bool,
     pub favorite: bool,
+    /// 游玩状态：''=未分类 | wishlist=想玩 | playing=进行中 | finished=已通关 | dropped=搁置。
+    pub status: String,
 }
 
 /// 游戏目录内的一个文件画像条目。
@@ -109,4 +111,23 @@ pub struct UpdateInfo {
     pub note: String,
     /// 安装包（exe/msi）直链，可能为空
     pub download_url: Option<String>,
+}
+
+/// 文件选择器里的一条目录/文件条目。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsEntry {
+    pub name: String,
+    pub is_dir: bool,
+    pub size: i64,
+    /// 修改时间（Unix 秒）。
+    pub modified: i64,
+}
+
+/// 目录列表结果（含是否因文件过多被截断）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirListing {
+    pub entries: Vec<FsEntry>,
+    pub truncated: bool,
 }

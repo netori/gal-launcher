@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { confirm } from "@tauri-apps/plugin-dialog";
-import { api, engineNeedsLocale, type FileInfo, type Game, type Patch } from "../api";
+import { confirm, open } from "@tauri-apps/plugin-dialog";
+import { api, engineNeedsLocale, STATUS_META, type FileInfo, type Game, type Patch } from "../api";
 import MetadataDialog from "./MetadataDialog.vue";
 import PatchDialog from "./PatchDialog.vue";
 import AssetDialog from "./AssetDialog.vue";
@@ -120,6 +120,37 @@ function pickLaunch() {
   if (props.game) emit("picklaunch", props.game);
 }
 
+async function onStatusChange(e: Event) {
+  const g = props.game;
+  if (!g) return;
+  const status = (e.target as HTMLSelectElement).value;
+  try {
+    const updated = await api.setStatus(g.id, status);
+    emit("updated", updated);
+    emit("notice", "已更新游玩状态");
+  } catch (err2) {
+    emit("notice", String(err2));
+  }
+}
+
+async function changeCover() {
+  const g = props.game;
+  if (!g) return;
+  try {
+    const p = await open({
+      multiple: false,
+      title: "选择封面图片",
+      filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg", "webp", "bmp"] }],
+    });
+    if (!p) return;
+    const updated = await api.setCover(g.id, p);
+    emit("updated", updated);
+    emit("notice", "已更换封面");
+  } catch (e) {
+    emit("notice", String(e));
+  }
+}
+
 async function onMetadataApplied(g: Game) {
   emit("updated", g);
   emit("notice", "已应用 VNDB 元数据");
@@ -192,6 +223,17 @@ async function removePatchEntry(p: Patch) {
 
       <div class="body">
         <img v-if="hero" class="hero" :src="hero" :alt="props.game.title" />
+
+        <div class="row" style="margin: 10px 0 12px; gap: 8px">
+          <select :value="props.game.status" @change="onStatusChange" style="flex: 1">
+            <option v-for="s in STATUS_META" :key="s.key || '_'" :value="s.key">
+              {{ s.label }}
+            </option>
+          </select>
+          <button class="btn small" @click="changeCover">
+            <Icon name="image" :size="13" /> 更换封面
+          </button>
+        </div>
 
         <div class="section-title" style="margin-top: 0">信息</div>
         <dl class="kv">

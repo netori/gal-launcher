@@ -22,6 +22,7 @@ export interface Game {
   playCount: number;
   hidden: boolean;
   favorite: boolean;
+  status: string;
 }
 
 export interface Candidate {
@@ -77,6 +78,18 @@ export interface UpdateInfo {
   downloadUrl: string | null;
 }
 
+export interface FsEntry {
+  name: string;
+  isDir: boolean;
+  size: number;
+  modified: number;
+}
+
+export interface DirListing {
+  entries: FsEntry[];
+  truncated: boolean;
+}
+
 export const api = {
   scanDirectory: (root: string) => invoke<Candidate[]>("scan_directory", { root }),
   importGames: (candidates: Candidate[]) =>
@@ -95,6 +108,13 @@ export const api = {
   setHiddenAttr: (path: string, hidden: boolean) =>
     invoke<void>("set_hidden_attr", { path, hidden }),
   readImage: (path: string) => invoke<string>("read_image", { path }),
+  readCover: (path: string, size?: number) =>
+    invoke<string>("read_cover", { path, size }),
+  setCover: (gameId: number, coverPath: string) =>
+    invoke<Game>("set_cover", { gameId, coverPath }),
+  setStatus: (gameId: number, status: string) =>
+    invoke<Game>("set_status", { gameId, status }),
+  checkMissing: () => invoke<Game[]>("check_missing"),
   launchGame: (gameId: number, useLocale: boolean, launchPath?: string) =>
     invoke<Game>("launch_game", { gameId, useLocale, launchPath }),
   setLaunchFile: (gameId: number, launchPath: string) =>
@@ -153,6 +173,19 @@ export const api = {
   // 更新检查
   checkUpdate: () => invoke<UpdateInfo | null>("check_update"),
   dismissUpdate: (version: string) => invoke<void>("dismiss_update", { version }),
+
+  // 移动端文件访问
+  checkFilesAccess: () => invoke<boolean>("check_files_access"),
+  requestFilesAccess: () => invoke<void>("request_all_files_access"),
+  getAuthorizedRoots: () => invoke<string[]>("get_authorized_roots"),
+  addAuthorizedRoot: (path: string) => invoke<void>("add_authorized_root", { path }),
+  removeAuthorizedRoot: (path: string) => invoke<void>("remove_authorized_root", { path }),
+
+  // 文件选择器
+  listDir: (path: string, exts?: string[]) =>
+    invoke<DirListing>("list_dir", { path, exts }),
+  listDrives: () => invoke<string[]>("list_drives"),
+  createDir: (path: string) => invoke<void>("create_dir", { path }),
 };
 
 export interface ArchiveInfo {
@@ -173,3 +206,16 @@ export interface AssetEntry {
 /** 显示用什么引擎转区时的提示文案。 */
 export const engineNeedsLocale = (engine: string) =>
   /吉里|Kiri|RPG|NScrip|WOLF|Artemis|Ren/i.test(engine);
+
+/** 游玩状态元数据（key / 中文标签 / 语义色）。 */
+export const STATUS_META: { key: string; label: string; color: string }[] = [
+  { key: "", label: "未分类", color: "#8a8178" },
+  { key: "wishlist", label: "想玩", color: "#6bb4ff" },
+  { key: "playing", label: "进行中", color: "#93b46e" },
+  { key: "finished", label: "已通关", color: "#f0b429" },
+  { key: "dropped", label: "搁置", color: "#e2645c" },
+];
+export const statusLabel = (k: string) =>
+  STATUS_META.find((s) => s.key === k)?.label ?? "未分类";
+export const statusColor = (k: string) =>
+  STATUS_META.find((s) => s.key === k)?.color ?? "#8a8178";

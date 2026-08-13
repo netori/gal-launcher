@@ -213,7 +213,8 @@ pub fn rollback(game_dir: &Path, db: &Connection, patch_id: i64) -> Result<usize
     Ok(count)
 }
 
-/// 启动安装器型补丁（直接运行安装程序）。
+/// 启动安装器型补丁（直接运行安装程序）。仅桌面端（exe 在移动端无意义）。
+#[cfg(target_os = "windows")]
 pub fn run_installer(game_dir: &Path, source: &Path) -> Result<(), String> {
     if !source.is_file() {
         return Err(format!("安装程序不存在：{}", source.display()));
@@ -223,6 +224,12 @@ pub fn run_installer(game_dir: &Path, source: &Path) -> Result<(), String> {
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("启动安装程序失败: {e}"))
+}
+
+/// 移动端不支持运行 .exe 安装器；统一报错提示。
+#[cfg(not(target_os = "windows"))]
+pub fn run_installer(_game_dir: &Path, _source: &Path) -> Result<(), String> {
+    Err("安装器型补丁（.exe）仅支持桌面端".into())
 }
 
 /// 用补丁来源的扩展名粗判安装方式。

@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 use crate::models::Candidate;
+use crate::util;
 
 /// 扫描深度上限（层数）。
 const MAX_DEPTH: usize = 10;
@@ -91,7 +92,7 @@ pub fn scan_directory(root: &Path, imported: &std::collections::HashSet<String>)
         let title = dir.file_name().and_then(|s| s.to_str()).unwrap_or("未命名游戏").to_string();
         let source_dir = dir.to_string_lossy().to_string();
         let launch_path = dir.join(&exe).to_string_lossy().to_string();
-        let already = imported.contains(&source_dir);
+        let already = imported.contains(&util::norm_path(&source_dir));
         out.push(Candidate {
             title,
             source_dir,

@@ -8,6 +8,7 @@ use tauri::{AppHandle, State};
 use rusqlite::Connection;
 
 use crate::db;
+#[cfg(target_os = "windows")]
 use crate::launcher;
 use crate::models::{Candidate, FileInfo, Game, Patch, PatchInput, Settings};
 use crate::patcher;
@@ -43,7 +44,10 @@ pub fn scan_directory(root: String, state: State<AppState>) -> CmdResult<Vec<Can
         let rows = stmt
             .query_map([], |r| r.get::<_, String>(0))
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?
+        let raw: std::collections::HashSet<String> =
+            rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?;
+        // 归一化后比较，避免大小写/分隔符/盘符差异导致误判为「未收录」
+        raw.into_iter().map(|d| util::norm_path(&d)).collect()
     };
     Ok(scanner::scan_directory(path, &imported))
 }
@@ -75,10 +79,17 @@ pub fn import_games(candidates: Vec<Candidate>, state: State<AppState>) -> CmdRe
     }
 
     let mut db = lock(&state);
+    // 一次性取回已收录目录的归一化键，导入时做「相等 + 子目录包含」双重去重。
+    let existing: Vec<String> = db::list_source_dirs(&db)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|d| util::norm_path(&d))
+        .collect();
     let mut imported = 0usize;
     for (title, src, launch, candidates, engine, cover, files) in payloads {
-        if db::is_imported(&db, &src) {
-            continue; // 已收录（避免与扫描结果之间的竞态）
+        let src_norm = util::norm_path(&src);
+        if existing.iter().any(|e| util::is_same_or_descendant(&src_norm, e)) {
+            continue; // 已收录（或已在某已收录目录内部）
         }
         let id = match db::insert_game(
             &mut db,
@@ -104,6 +115,17 @@ pub fn import_games(candidates: Vec<Candidate>, state: State<AppState>) -> CmdRe
 pub fn list_games(show_hidden: Option<bool>, state: State<AppState>) -> CmdResult<Vec<Game>> {
     let db = lock(&state);
     db::list_games(&db, show_hidden.unwrap_or(false)).map_err(|e| e.to_string())
+}
+
+/// 检测库内失效游戏：source_dir 已不存在（目录被移动/删除），启动会失败。
+#[tauri::command]
+pub fn check_missing(state: State<AppState>) -> CmdResult<Vec<Game>> {
+    let db = lock(&state);
+    let games = db::list_games(&db, true).map_err(|e| e.to_string())?;
+    Ok(games
+        .into_iter()
+        .filter(|g| !Path::new(&g.source_dir).is_dir())
+        .collect())
 }
 
 /// 拉取某个游戏的目录文件画像。
@@ -135,6 +157,7 @@ pub fn remove_from_library(game_id: i64, state: State<AppState>) -> CmdResult<()
 }
 
 /// 把游戏整个目录送进回收站（可恢复），同时从库中移除。
+/// Android 无回收站概念：桌面走 trash，移动端直接删除（All-Files-Access 下可用）。
 #[tauri::command]
 pub fn delete_game(game_id: i64, state: State<AppState>) -> CmdResult<()> {
     let db = lock(&state);
@@ -143,12 +166,24 @@ pub fn delete_game(game_id: i64, state: State<AppState>) -> CmdResult<()> {
     db::delete_from_library(&db, game_id).map_err(|e| e.to_string())?;
     drop(db);
 
-    trash::delete(&target).map_err(|e| {
-        format!(
-            "已从库中移除，但送入回收站失败（{e}）。游戏文件仍在：{target}"
-        )
-    })?;
+    delete_on_disk(&target)?;
     Ok(())
+}
+
+/// Windows：送进系统回收站（可恢复）。失败时返回带「游戏文件仍在」的提示。
+#[cfg(windows)]
+fn delete_on_disk(target: &str) -> Result<(), String> {
+    trash::delete(target).map_err(|e| {
+        format!("已从库中移除，但送入回收站失败（{e}）。游戏文件仍在：{target}")
+    })
+}
+
+/// Android（及未来其它移动平台）：直接删除目录，无回收站。
+#[cfg(not(windows))]
+fn delete_on_disk(target: &str) -> Result<(), String> {
+    std::fs::remove_dir_all(target).map_err(|e| {
+        format!("已从库中移除，但删除游戏目录失败（{e}）。游戏文件仍在：{target}")
+    })
 }
 
 /// 对某个目录设置/取消 Windows 隐藏+系统属性（文件系统级改动）。
@@ -163,6 +198,29 @@ pub fn read_image(path: String) -> CmdResult<String> {
     util::read_image_data_uri(&path)
 }
 
+/// 读取封面缩略图（data URI），带磁盘缓存。封面墙用，避免整张原图 base64 进内存。
+#[tauri::command]
+pub fn read_cover(path: String, size: Option<u32>, state: State<AppState>) -> CmdResult<String> {
+    let thumbs_dir = state
+        .db_path
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join("covers")
+        .join("thumbs");
+    util::read_cover_thumb(&path, &thumbs_dir, size.unwrap_or(400))
+}
+
+/// 手动更换本地封面（封面图片文件保留在原处，只把路径写入库）。
+#[tauri::command]
+pub fn set_cover(game_id: i64, cover_path: String, state: State<AppState>) -> CmdResult<Game> {
+    if !Path::new(&cover_path).is_file() {
+        return Err("封面图片不存在".into());
+    }
+    let db = lock(&state);
+    db::update_cover(&db, game_id, Some(&cover_path)).map_err(|e| e.to_string())?;
+    db::get_game(&db, game_id).map_err(|e| e.to_string())
+}
+
 /// 把某游戏的默认启动文件改成指定的可执行文件（不启动）。
 /// 供「更换启动文件」入口使用；首次启动选文件走 launch_game + launch_path。
 #[tauri::command]
@@ -174,11 +232,19 @@ pub fn set_launch_file(game_id: i64, launch_path: String, state: State<AppState>
     db::set_launch_file(&db, game_id, &launch_path).map_err(|e| e.to_string())
 }
 
-/// 启动游戏。use_locale 为 true 时走 Locale Emulator 转区（ja-JP）。
-/// `launch_path` 可选：当用户在多启动文件里选了一个 / 或手动指定新的启动文件时传入。
-/// 传入后会被持久化为该游戏的默认启动文件。返回更新后的 Game。
+/// 启动游戏。桌面版：exe + LE 转区 + 后台时长统计；移动版：M2 引擎→运行时适配。
 #[tauri::command]
 pub fn launch_game(
+    game_id: i64,
+    use_locale: Option<bool>,
+    launch_path: Option<String>,
+    state: State<AppState>,
+) -> CmdResult<Game> {
+    launch_game_impl(game_id, use_locale, launch_path, state)
+}
+
+#[cfg(target_os = "windows")]
+fn launch_game_impl(
     game_id: i64,
     use_locale: Option<bool>,
     launch_path: Option<String>,
@@ -227,6 +293,16 @@ pub fn launch_game(
     Ok(game)
 }
 
+#[cfg(not(target_os = "windows"))]
+fn launch_game_impl(
+    _game_id: i64,
+    _use_locale: Option<bool>,
+    _launch_path: Option<String>,
+    _state: State<AppState>,
+) -> CmdResult<Game> {
+    Err("移动端启动（引擎→运行时适配）将在后续版本提供".into())
+}
+
 /// 保存一项设置。
 #[tauri::command]
 pub fn save_setting(key: String, value: String, state: State<AppState>) -> CmdResult<()> {
@@ -243,6 +319,61 @@ pub fn get_settings(state: State<AppState>) -> CmdResult<Settings> {
         game_root: db::get_setting(&db, "game_root"),
         unpack_tool: db::get_setting(&db, "unpack_tool"),
     })
+}
+
+// ---------------- 移动端文件访问权限 ----------------
+
+/// 是否已获得「所有文件访问」权限（桌面端恒为 true，无此概念）。
+#[tauri::command]
+#[allow(unused_variables)]
+pub fn check_files_access(app: tauri::AppHandle) -> bool {
+    #[cfg(target_os = "android")]
+    {
+        crate::android::is_all_files_granted(&app)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        true
+    }
+}
+
+/// 请求「所有文件访问」权限（仅 Android；当前返回引导文案由前端展示）。
+#[tauri::command]
+#[allow(unused_variables)]
+pub fn request_all_files_access(app: tauri::AppHandle) -> CmdResult<()> {
+    #[cfg(target_os = "android")]
+    {
+        crate::android::request_all_files_access(&app)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        Ok(())
+    }
+}
+
+/// 列出已授权的游戏根目录（移动端扫描/导出选根用；桌面端为空）。
+#[tauri::command]
+pub fn get_authorized_roots(state: State<AppState>) -> CmdResult<Vec<String>> {
+    let db = lock(&state);
+    db::list_authorized_roots(&db).map_err(|e| e.to_string())
+}
+
+/// 登记一个已授权的游戏根目录。
+#[tauri::command]
+pub fn add_authorized_root(path: String, state: State<AppState>) -> CmdResult<()> {
+    let p = path.trim();
+    if p.is_empty() {
+        return Err("路径不能为空".into());
+    }
+    let db = lock(&state);
+    db::add_authorized_root(&db, p).map_err(|e| e.to_string())
+}
+
+/// 移除一个已授权根目录。
+#[tauri::command]
+pub fn remove_authorized_root(path: String, state: State<AppState>) -> CmdResult<()> {
+    let db = lock(&state);
+    db::remove_authorized_root(&db, &path).map_err(|e| e.to_string())
 }
 
 // ---------------- VNDB 元数据 ----------------
@@ -298,6 +429,13 @@ pub fn apply_vndb_metadata(
 pub fn set_game_title(game_id: i64, title: String, state: State<AppState>) -> CmdResult<Game> {
     let db = lock(&state);
     db::set_title(&db, game_id, title.trim()).map_err(|e| e.to_string())
+}
+
+/// 设置游玩状态（''/wishlist/playing/finished/dropped）。
+#[tauri::command]
+pub fn set_status(game_id: i64, status: String, state: State<AppState>) -> CmdResult<Game> {
+    let db = lock(&state);
+    db::set_status(&db, game_id, status.trim()).map_err(|e| e.to_string())
 }
 
 /// 批量补全结果。
@@ -366,11 +504,17 @@ pub fn fetch_missing_covers(state: State<AppState>) -> CmdResult<CoverBatch> {
 }
 
 /// 在资源管理器中打开（若是文件则定位选中它）。后台分离启动，应用不等待。
+/// 仅 Windows 有意义；移动端返回不支持。
 #[tauri::command]
 pub fn reveal_in_explorer(path: String) -> CmdResult<()> {
-    let p = Path::new(&path);
+    reveal_in_explorer_impl(&path)
+}
+
+#[cfg(target_os = "windows")]
+fn reveal_in_explorer_impl(path: &str) -> CmdResult<()> {
+    let p = Path::new(path);
     let (dir, select_file) = if p.is_file() {
-        (p.parent().map(|d| d.to_path_buf()), Some(path))
+        (p.parent().map(|d| d.to_path_buf()), Some(path.to_string()))
     } else if p.is_dir() {
         (Some(p.to_path_buf()), None)
     } else {
@@ -400,35 +544,31 @@ pub fn reveal_in_explorer(path: String) -> CmdResult<()> {
     Ok(())
 }
 
-/// 枚举目录的直接子目录名（供内置文件选择器用；纯 IO，不触碰数据库锁）。
-#[tauri::command]
-pub fn list_directory(path: String) -> CmdResult<Vec<String>> {
-    let mut dirs = Vec::new();
-    for e in std::fs::read_dir(Path::new(&path)).map_err(|e| e.to_string())? {
-        let e = e.map_err(|e| e.to_string())?;
-        if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            dirs.push(e.file_name().to_string_lossy().into_owned());
-        }
-    }
-    dirs.sort();
-    Ok(dirs)
+#[cfg(not(target_os = "windows"))]
+fn reveal_in_explorer_impl(_path: &str) -> CmdResult<()> {
+    Err("此平台不支持打开系统文件管理器".into())
 }
 
-/// 枚举目录的直接 *.exe 文件名（供内置文件选择器用）。
+/// 列出目录内容（子目录 + 文件），供内置文件选择器用。
+/// `exts` 指定时只返回匹配扩展名的文件；不指定返回所有文件（最多 500 个，超出见 truncated）。
 #[tauri::command]
-pub fn list_exe_files(path: String) -> CmdResult<Vec<String>> {
-    let mut exes = Vec::new();
-    for e in std::fs::read_dir(Path::new(&path)).map_err(|e| e.to_string())? {
-        let e = e.map_err(|e| e.to_string())?;
-        if e.file_type().map(|t| t.is_file()).unwrap_or(false) {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if name.to_ascii_lowercase().ends_with(".exe") {
-                exes.push(name);
-            }
-        }
+pub fn list_dir(path: String, exts: Option<Vec<String>>) -> CmdResult<crate::models::DirListing> {
+    util::list_dir(&path, exts.as_deref())
+}
+
+/// 列出可用的磁盘根目录（如 "C:\\"）。仅 Windows 有意义，其它平台返回空。
+#[tauri::command]
+pub fn list_drives() -> Vec<String> {
+    util::list_drives()
+}
+
+/// 在指定路径下新建目录（供文件选择器的「新建文件夹」）。
+#[tauri::command]
+pub fn create_dir(path: String) -> CmdResult<()> {
+    if path.trim().is_empty() {
+        return Err("路径为空".into());
     }
-    exes.sort();
-    Ok(exes)
+    std::fs::create_dir_all(&path).map_err(|e| format!("创建目录失败: {e}"))
 }
 
 // ---------------- 补丁管理 ----------------
@@ -746,11 +886,13 @@ fn parse_version(s: &str) -> Option<(u32, u32, u32)> {
 
 /// 在常见位置查找常用的外部解包工具（GARbro / GalArc / arc_unpacker 等）。
 /// 前端传入候选 exe 文件名（小写），返回「exe 文件名 → 首次找到的完整路径」。
+/// 仅桌面端（exe 工具在移动端无意义）。
 #[tauri::command]
 pub fn search_unpack_tools(exes: Vec<String>) -> HashMap<String, String> {
     detect_unpack_tools(&exes)
 }
 
+#[cfg(target_os = "windows")]
 fn detect_unpack_tools(exes: &[String]) -> HashMap<String, String> {
     let mut wanted: std::collections::HashSet<String> = exes
         .iter()
@@ -808,6 +950,12 @@ fn detect_unpack_tools(exes: &[String]) -> HashMap<String, String> {
         walk_for_tools(&root, &mut wanted, &mut found, SKIP, 0, 2);
     }
     found
+}
+
+/// 移动端无 exe 解包工具概念，直接返回空。
+#[cfg(not(target_os = "windows"))]
+fn detect_unpack_tools(_exes: &[String]) -> HashMap<String, String> {
+    HashMap::new()
 }
 
 fn walk_for_tools(
