@@ -19,6 +19,8 @@ const saved = ref(false);
 const err = ref("");
 const bakBusy = ref(false);
 const bakMsg = ref("");
+const coverBusy = ref(false);
+const coverMsg = ref("");
 
 watch(
   () => props.modelValue,
@@ -145,8 +147,7 @@ async function doBackup() {
 }
 
 /** 从备份 zip 恢复（会替换现有库 / 封面 / 补丁备份）。 */
-async function doRestore() {
-  const file = await open({
+async function doRestore() {  const file = await open({
     multiple: false,
     title: "选择备份文件",
     filters: [{ name: "备份文件", extensions: ["zip"] }],
@@ -167,6 +168,23 @@ async function doRestore() {
     bakMsg.value = String(e);
   } finally {
     bakBusy.value = false;
+  }
+}
+
+/** 为所有还没有封面的游戏从 VNDB 批量补封面+元数据（移到设置页，避免顶栏常驻低频操作）。 */
+async function doFetchCovers() {
+  if (coverBusy.value) return;
+  coverBusy.value = true;
+  coverMsg.value = "";
+  try {
+    const r = await api.fetchMissingCovers();
+    if (r.updated > 0) coverMsg.value = `已补全 ${r.updated} 个封面`;
+    else coverMsg.value = "没有需要补封面的游戏了";
+    if (r.failed.length) coverMsg.value += `；${r.failed.length} 个未匹配上（可在详情里手动搜 VNDB）`;
+  } catch (e) {
+    coverMsg.value = String(e);
+  } finally {
+    coverBusy.value = false;
   }
 }
 
@@ -255,6 +273,17 @@ async function save() {
           </div>
           <p class="muted">备份 = 游戏库 + 封面 + 补丁备份；不含可重新解包的资源缓存。</p>
           <p class="muted" v-if="bakMsg" style="word-break: break-all">{{ bakMsg }}</p>
+        </div>
+
+        <div class="field">
+          <label>元数据补全</label>
+          <div class="row">
+            <button class="btn small" :disabled="coverBusy" @click="doFetchCovers">
+              <Icon name="image" :size="13" /> 批量补全缺失封面
+            </button>
+          </div>
+          <p class="muted">为没有封面的游戏从 VNDB 拉取封面与元数据（评分 / 简介 / 标签 / 厂商 / 时长）。</p>
+          <p class="muted" v-if="coverMsg" style="word-break: break-all">{{ coverMsg }}</p>
         </div>
 
         <div v-if="err" class="toast err">{{ err }}</div>

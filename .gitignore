@@ -36,3 +36,6 @@ src-tauri/gen
 
 # Wrangler 本地开发状态
 .wrangler
+
+# Android 构建本机补丁（中文路径 workaround，勿提交到仓库）
+.cargo/

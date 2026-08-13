@@ -47,6 +47,8 @@ pub struct Game {
     pub play_count: i64,
     pub hidden: bool,
     pub favorite: bool,
+    /// 游玩状态：''=未分类 | wishlist=想玩 | playing=进行中 | finished=已通关 | dropped=搁置。
+    pub status: String,
 }
 
 /// 游戏目录内的一个文件画像条目。
