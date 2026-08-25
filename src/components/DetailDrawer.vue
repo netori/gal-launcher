@@ -5,6 +5,7 @@ import { api, engineNeedsLocale, STATUS_META, type FileInfo, type Game, type Pat
 import MetadataDialog from "./MetadataDialog.vue";
 import PatchDialog from "./PatchDialog.vue";
 import AssetDialog from "./AssetDialog.vue";
+import FolderPickerDialog from "./FolderPickerDialog.vue";
 import Icon from "./Icon.vue";
 import { useCloseOnEscape } from "../composables/useCloseOnEscape";
 
@@ -28,6 +29,8 @@ const hero = ref("");
 const showMetadata = ref(false);
 const showPatch = ref(false);
 const showAssets = ref(false);
+const showSavePicker = ref(false);
+const saveRoot = ref("");
 const err = ref("");
 const opBusy = ref(false);
 const closing = ref(false);
@@ -129,6 +132,22 @@ const patchKindColor = (k: string) =>
 
 function srcLeaf(p: string): string {
   return p.replace(/\\/g, "/").split("/").pop() ?? p;
+}
+
+function openSaveBackup() {
+  saveRoot.value = props.game?.sourceDir || "C:\\";
+  showSavePicker.value = true;
+}
+
+async function onSavePicked(p: string) {
+  showSavePicker.value = false;
+  if (!props.game) return;
+  try {
+    const msg = await api.backupSavedata(props.game.id, p);
+    emit("notice", msg);
+  } catch (e) {
+    emit("notice", String(e));
+  }
 }
 
 function pickLaunch() {
@@ -373,6 +392,9 @@ async function removePatchEntry(p: Patch) {
         <button class="btn" v-if="needsLocale && !isAndroid" @click="emit('launch', props.game, true)">
           <Icon name="globe" :size="14" /> 转区启动
         </button>
+        <button class="btn" @click="openSaveBackup">
+          <Icon name="upload" :size="14" /> 备份存档
+        </button>
         <button class="btn" @click="emit('favorite', props.game)">
           <Icon name="star" :size="14" :filled="props.game.favorite" />
           {{ props.game.favorite ? "已收藏" : "收藏" }}
@@ -410,6 +432,13 @@ async function removePatchEntry(p: Patch) {
         v-if="showAssets"
       />
     </Transition>
+    <FolderPickerDialog
+      v-if="showSavePicker"
+      :root="saveRoot"
+      title="选择存档目录"
+      @picked="onSavePicked"
+      @close="showSavePicker = false"
+    />
   </template>
 </template>
 

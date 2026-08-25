@@ -253,6 +253,89 @@ pub fn set_launch_file(game_id: i64, launch_path: String, state: State<AppState>
     db::set_launch_file(&db, game_id, &launch_path).map_err(|e| e.to_string())
 }
 
+/// 把指定存档目录复制到应用数据目录下的 savedata_backups/<game_id>/<timestamp>。
+#[tauri::command]
+pub fn backup_savedata(game_id: i64, save_path: String, state: State<AppState>) -> CmdResult<String> {
+    let src = std::path::PathBuf::from(&save_path);
+    if !src.is_dir() {
+        return Err(format!("存档目录不存在：{}", save_path));
+    }
+    let base = state
+        .db_path
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join("savedata_backups")
+        .join(game_id.to_string());
+    let ts = util::now_secs();
+    let dest = base.join(ts.to_string());
+    std::fs::create_dir_all(&dest).map_err(|e| format!("创建备份目录失败: {e}"))?;
+
+    let mut copied = 0usize;
+    for entry in walkdir::WalkDir::new(&src).into_iter().filter_map(|e| e.ok()) {
+        let rel = match entry.path().strip_prefix(&src) {
+            Ok(r) => r.to_path_buf(),
+            Err(_) => continue,
+        };
+        if rel.as_os_str().is_empty() {
+            continue;
+        }
+        let target = dest.join(&rel);
+        if entry.file_type().is_dir() {
+            std::fs::create_dir_all(&target).map_err(|e| format!("创建子目录失败: {e}"))?;
+            continue;
+        }
+        if entry.file_type().is_file() {
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+            std::fs::copy(entry.path(), &target).map_err(|e| format!("复制文件失败: {e}"))?;
+            copied += 1;
+        }
+    }
+    Ok(format!("已备份 {copied} 个存档文件 → {}", dest.to_string_lossy()))
+}
+
+// ---------------- 收藏分组 ----------------
+
+#[tauri::command]
+pub fn list_collections(state: State<AppState>) -> CmdResult<Vec<db::CollectionSummary>> {
+    let db = lock(&state);
+    db::list_collections(&db).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn create_collection(name: String, state: State<AppState>) -> CmdResult<i64> {
+    if name.trim().is_empty() {
+        return Err("分组名称不能为空".into());
+    }
+    let db = lock(&state);
+    db::create_collection(&db, &name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_collection(collection_id: i64, state: State<AppState>) -> CmdResult<()> {
+    let db = lock(&state);
+    db::delete_collection(&db, collection_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn add_to_collection(collection_id: i64, game_id: i64, state: State<AppState>) -> CmdResult<()> {
+    let db = lock(&state);
+    db::add_game_to_collection(&db, collection_id, game_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn remove_from_collection(collection_id: i64, game_id: i64, state: State<AppState>) -> CmdResult<()> {
+    let db = lock(&state);
+    db::remove_game_from_collection(&db, collection_id, game_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_collection_games(collection_id: i64, state: State<AppState>) -> CmdResult<Vec<Game>> {
+    let db = lock(&state);
+    db::list_collection_games(&db, collection_id).map_err(|e| e.to_string())
+}
+
 /// 启动游戏。桌面版：exe + LE 转区 + 后台时长统计；移动版：M2 引擎→运行时适配。
 #[tauri::command]
 pub fn launch_game(

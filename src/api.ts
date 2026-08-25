@@ -65,6 +65,12 @@ export interface VnSearchHit {
   votecount: number;
 }
 
+export interface CollectionSummary {
+  id: number;
+  name: string;
+  count: number;
+}
+
 export interface BgmSearchHit {
   bgmId: string;
   title: string;
@@ -106,8 +112,21 @@ export const api = {
     invoke<number>("import_games", { candidates }),
   listGames: (showHidden: boolean) =>
     invoke<Game[]>("list_games", { showHidden }),
+  listCollections: () => invoke<CollectionSummary[]>("list_collections"),
+  createCollection: (name: string) =>
+    invoke<number>("create_collection", { name }),
+  deleteCollection: (collectionId: number) =>
+    invoke<void>("delete_collection", { collectionId }),
+  addToCollection: (collectionId: number, gameId: number) =>
+    invoke<void>("add_to_collection", { collectionId, gameId }),
+  removeFromCollection: (collectionId: number, gameId: number) =>
+    invoke<void>("remove_from_collection", { collectionId, gameId }),
+  listCollectionGames: (collectionId: number) =>
+    invoke<Game[]>("list_collection_games", { collectionId }),
   getGameFiles: (gameId: number) =>
     invoke<FileInfo[]>("get_game_files", { gameId }),
+  backupSavedata: (gameId: number, savePath: string) =>
+    invoke<string>("backup_savedata", { gameId, savePath }),
   toggleFavorite: (gameId: number) =>
     invoke<Game>("toggle_favorite", { gameId }),
   setHidden: (gameId: number, hidden: boolean) =>

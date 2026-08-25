@@ -1,5 +1,6 @@
 import { computed, reactive, ref } from "vue";
 import { api, type Game } from "./api";
+import { uiSettings } from "./composables/useUiSettings";
 
 export type SortKey = "recent" | "title" | "rating" | "favorite";
 export type ViewKey = "all" | "favorites" | "hidden";
@@ -44,6 +45,13 @@ function applySearch(arr: Game[]): Game[] {
   );
 }
 
+function isNsfw(g: Game): boolean {
+  const hay = [g.title, g.description ?? "", g.tags.join(" ")]
+    .join(" ")
+    .toLowerCase();
+  return /r18|18禁|eroge|nsfw|adult|成人|色情/.test(hay);
+}
+
 function applyView(arr: Game[]): Game[] {
   let out = arr;
   switch (state.view) {
@@ -57,6 +65,7 @@ function applyView(arr: Game[]): Game[] {
       break;
   }
   if (state.status) out = out.filter((g) => g.status === state.status);
+  if (uiSettings.nsfwFilter) out = out.filter((g) => !isNsfw(g));
   return out;
 }
 

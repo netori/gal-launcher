@@ -5,6 +5,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "../api";
 import { coverFetch } from "../composables/useCoverFetch";
 import { useAmbientSettings } from "../composables/useAmbientSettings";
+import { useUiSettings } from "../composables/useUiSettings";
 import Icon from "./Icon.vue";
 // 版本号从 package.json 读取（构建期注入），避免与后端版本三处同步时漏改
 import pkg from "../../package.json";
@@ -25,6 +26,7 @@ const bakBusy = ref(false);
 const bakMsg = ref("");
 const coverMsg = ref("");
 const { settings: ambientSettings } = useAmbientSettings();
+const { settings: uiSettings } = useUiSettings();
 
 watch(
   () => props.modelValue,
@@ -295,6 +297,15 @@ async function save() {
             </span>
           </div>
           <p class="muted">关闭背景后使用纯暗色底；压暗越高，背景越不抢封面墙。</p>
+        </div>
+
+        <div class="field">
+          <label>NSFW 过滤</label>
+          <label class="row toggle-row" style="cursor: pointer">
+            <input type="checkbox" v-model="uiSettings.nsfwFilter" style="width: auto" />
+            <span>隐藏 R18 / NSFW 游戏</span>
+          </label>
+          <p class="muted">根据标题、简介和标签中的 R18 / NSFW 关键词过滤封面墙。</p>
         </div>
 
         <div class="field">

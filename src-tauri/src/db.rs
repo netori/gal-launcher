@@ -168,6 +168,22 @@ CREATE TABLE IF NOT EXISTS authorized_roots (
   added_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS collections (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  name       TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS collection_games (
+  collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+  game_id       INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+  added_at      INTEGER NOT NULL,
+  PRIMARY KEY (collection_id, game_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_collections_games_collection ON collection_games(collection_id);
+CREATE INDEX IF NOT EXISTS idx_collections_games_game ON collection_games(game_id);
+
 CREATE INDEX IF NOT EXISTS idx_game_files_game ON game_files(game_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_game ON play_sessions(game_id);
 CREATE INDEX IF NOT EXISTS idx_patches_game ON patches(game_id);
@@ -240,6 +256,71 @@ pub fn get_game_by_dir(conn: &Connection, dir: &str) -> Result<Option<Game>> {
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(e),
     }
+}
+
+/// 自定义收藏分组摘要。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CollectionSummary {
+    pub id: i64,
+    pub name: String,
+    pub count: i64,
+}
+
+pub fn list_collections(conn: &Connection) -> Result<Vec<CollectionSummary>> {
+    let mut stmt = conn.prepare(
+        "SELECT c.id, c.name, COUNT(cg.game_id) FROM collections c
+         LEFT JOIN collection_games cg ON cg.collection_id = c.id
+         GROUP BY c.id ORDER BY c.created_at ASC"
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(CollectionSummary {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            count: r.get(2)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn create_collection(conn: &Connection, name: &str) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO collections (name, created_at) VALUES (?1, ?2)",
+        params![name.trim(), crate::util::now_secs()],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn delete_collection(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute("DELETE FROM collections WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
+pub fn add_game_to_collection(conn: &Connection, collection_id: i64, game_id: i64) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO collection_games (collection_id, game_id, added_at) VALUES (?1, ?2, ?3)",
+        params![collection_id, game_id, crate::util::now_secs()],
+    )?;
+    Ok(())
+}
+
+pub fn remove_game_from_collection(conn: &Connection, collection_id: i64, game_id: i64) -> Result<()> {
+    conn.execute(
+        "DELETE FROM collection_games WHERE collection_id = ?1 AND game_id = ?2",
+        params![collection_id, game_id],
+    )?;
+    Ok(())
+}
+
+pub fn list_collection_games(conn: &Connection, collection_id: i64) -> Result<Vec<Game>> {
+    let sql = format!(
+        "SELECT {GAME_COLS} FROM games g
+         JOIN collection_games cg ON cg.game_id = g.id
+         WHERE cg.collection_id = ?1
+         ORDER BY cg.added_at DESC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![collection_id], |r| row_to_game(r))?;
+    rows.collect()
 }
 
 pub fn insert_game(

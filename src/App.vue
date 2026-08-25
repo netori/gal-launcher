@@ -15,6 +15,7 @@ import DetailDrawer from "./components/DetailDrawer.vue";
 import LaunchDialog from "./components/LaunchDialog.vue";
 import AndroidEmulatorDialog from "./components/AndroidEmulatorDialog.vue";
 import StatsDialog from "./components/StatsDialog.vue";
+import CollectionsDialog from "./components/CollectionsDialog.vue";
 import Icon from "./components/Icon.vue";
 import BrandLogo from "./components/BrandLogo.vue";
 import brandLogo from "./assets/brand-logo.png";
@@ -28,6 +29,7 @@ const showScan = ref(false);
 const showSettings = ref(false);
 const showResources = ref(false);
 const showStats = ref(false);
+const showCollections = ref(false);
 const showMissing = ref(false);
 // 顶栏「更多」溢出菜单（收纳低频操作：失效检测 / 资源站）
 const showMore = ref(false);
@@ -601,6 +603,9 @@ function trashGame(game: Game) {
       <button class="item" @click="showStats = true; showMore = false">
         <Icon name="play" :size="15" /> 数据统计
       </button>
+      <button class="item" @click="showCollections = true; showMore = false">
+        <Icon name="folder" :size="15" /> 收藏分组
+      </button>
     </div>
     <div
       class="overlay"
@@ -662,6 +667,9 @@ function trashGame(game: Game) {
   </Transition>
   <Transition name="overlay">
     <StatsDialog v-if="showStats" @close="showStats = false" />
+  </Transition>
+  <Transition name="overlay">
+    <CollectionsDialog v-if="showCollections" @close="showCollections = false" />
   </Transition>
   <Transition name="overlay">
     <MissingDialog
