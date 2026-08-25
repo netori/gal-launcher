@@ -192,6 +192,9 @@ CREATE INDEX IF NOT EXISTS idx_pbackups_patch ON patch_backups(patch_id);
 
 const GAME_COLS: &str = "id,title,source_dir,launch_path,launch_candidates,launch_set,engine,cover_path,description,rating,vndb_id,tags,developer,released,length_minutes,added_at,last_played,total_seconds,play_count,hidden,favorite,status";
 
+/// 联表查询时使用的 games 列（加 g. 前缀避免与其它表同名列冲突）。
+const GAME_COLS_QUALIFIED: &str = "g.id,g.title,g.source_dir,g.launch_path,g.launch_candidates,g.launch_set,g.engine,g.cover_path,g.description,g.rating,g.vndb_id,g.tags,g.developer,g.released,g.length_minutes,g.added_at,g.last_played,g.total_seconds,g.play_count,g.hidden,g.favorite,g.status";
+
 fn parse_strings(raw: &str) -> Vec<String> {
     serde_json::from_str(raw).unwrap_or_default()
 }
@@ -313,7 +316,7 @@ pub fn remove_game_from_collection(conn: &Connection, collection_id: i64, game_i
 
 pub fn list_collection_games(conn: &Connection, collection_id: i64) -> Result<Vec<Game>> {
     let sql = format!(
-        "SELECT {GAME_COLS} FROM games g
+        "SELECT {GAME_COLS_QUALIFIED} FROM games g
          JOIN collection_games cg ON cg.game_id = g.id
          WHERE cg.collection_id = ?1
          ORDER BY cg.added_at DESC"
