@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useLibrary } from "./store";
 import { api, type Game, type UpdateInfo, STATUS_META } from "./api";
+import { coverFetch } from "./composables/useCoverFetch";
 
+import AmbientBackground from "./components/AmbientBackground.vue";
 import GameCard from "./components/GameCard.vue";
 import ScanDialog from "./components/ScanDialog.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
@@ -11,6 +13,8 @@ import ResourceDialog from "./components/ResourceDialog.vue";
 import MissingDialog from "./components/MissingDialog.vue";
 import DetailDrawer from "./components/DetailDrawer.vue";
 import LaunchDialog from "./components/LaunchDialog.vue";
+import AndroidEmulatorDialog from "./components/AndroidEmulatorDialog.vue";
+import StatsDialog from "./components/StatsDialog.vue";
 import Icon from "./components/Icon.vue";
 import BrandLogo from "./components/BrandLogo.vue";
 import brandLogo from "./assets/brand-logo.png";
@@ -23,7 +27,10 @@ const selectedGame = ref<Game | null>(null);
 const showScan = ref(false);
 const showSettings = ref(false);
 const showResources = ref(false);
+const showStats = ref(false);
 const showMissing = ref(false);
+// 顶栏「更多」溢出菜单（收纳低频操作：失效检测 / 资源站）
+const showMore = ref(false);
 
 // 多选模式
 const selectMode = ref(false);
@@ -73,6 +80,8 @@ const updateNote = () => (updateInfo.value?.note ?? "").replace(/\s+/g, " ").sli
 
 // 启动文件选择：首次启动 / 手动更换
 const launchPick = ref<{ game: Game; useLocale: boolean; pickOnly: boolean } | null>(null);
+// Android：点击启动时先弹出模拟器选择器
+const emulatorPick = ref<Game | null>(null);
 
 // 右键菜单
 const ctx = reactive<{ x: number; y: number; game: Game | null }>({ x: 0, y: 0, game: null });
@@ -91,13 +100,14 @@ function ctxAction(fn: (g: Game) => void) {
   if (g) fn(g);
 }
 
-// 顶层 Esc：关右键菜单 / 确认框（对话框与抽屉各自处理自己的 Esc，只在有东西可关时才拦截）
+// 顶层 Esc：关右键菜单 / 「更多」下拉 / 确认框（对话框与抽屉各自处理自己的 Esc，只在有东西可关时才拦截）
 useCloseOnEscape(
   () => {
     if (ctx.game) closeCtx();
+    else if (showMore.value) showMore.value = false;
     else confirmBox.show = false;
   },
-  () => !!(ctx.game || confirmBox.show)
+  () => !!(ctx.game || confirmBox.show || showMore.value)
 );
 
 /** 封面墙方向键：焦点在卡片上时 ←/→/↑/↓ 移动焦点（Enter 由卡片自身处理为打开）。 */
@@ -158,6 +168,18 @@ async function checkFilesAccess() {
   }
 }
 async function requestFilesAccess() {
+  const bridge = (window as unknown as {
+    GalLauncherAndroid?: { requestAllFilesAccess?: () => void };
+  }).GalLauncherAndroid;
+  if (bridge && typeof bridge.requestAllFilesAccess === "function") {
+    try {
+      bridge.requestAllFilesAccess();
+      filesAccessHint.value = "已打开系统设置，请开启「所有文件访问」后返回，再点「我已开启，重新检测」。";
+    } catch (e) {
+      filesAccessHint.value = String(e);
+    }
+    return;
+  }
   try {
     await api.requestFilesAccess();
     filesAccessHint.value = "";
@@ -196,16 +218,28 @@ function onSettingsRestored() {
   toast("已从备份恢复");
 }
 
+// ---- 批量补封面（共享任务：进度横幅 + 取消；与设置页按钮同一实例） ----
+const coverRunning = coverFetch.running;
+const coverProgress = coverFetch.progress;
+const coverPct = computed(() =>
+  coverProgress.value.total > 0
+    ? Math.min(100, Math.round((coverProgress.value.processed / coverProgress.value.total) * 100))
+    : 0
+);
+function coverCancel() {
+  coverFetch.cancel();
+}
+
 async function onImported(n: number) {
   await lib.refresh();
   toast(`已导入 ${n} 个游戏`);
   const missing = lib.visible.value.filter((g) => !g.coverPath).length;
-  if (missing > 0) {
-    toast(`正在自动补全 ${missing} 个封面…`);
+  if (missing > 0 && !coverFetch.running.value) {
     try {
-      const r = await api.fetchMissingCovers();
+      const r = await coverFetch.start();
       await lib.refresh();
-      if (r.updated > 0) toast(`已自动补全 ${r.updated} 个封面`);
+      if (r.updated > 0) toast(`已自动补全 ${r.updated} 个封面${r.cancelled ? "（已取消）" : ""}`);
+      else if (r.cancelled) toast("已取消补全");
       if (r.failed.length) {
         toast(`有 ${r.failed.length} 个没匹配上，可在详情里手动搜 VNDB`, "err");
       }
@@ -223,6 +257,11 @@ function handleClick(game: Game) {
  * 否则直接启动。启动成功后把返回的 Game 同步回内存。
  */
 function handleLaunch(game: Game, le: boolean) {
+  // Android：不走 Windows exe/LE，弹出模拟器选择器，尽量匹配常用模拟器 + 系统打开方式
+  if (isAndroid) {
+    emulatorPick.value = game;
+    return;
+  }
   if (!game.launchSet && game.launchCandidates.length > 1) {
     launchPick.value = { game, useLocale: le, pickOnly: false };
     return;
@@ -371,6 +410,8 @@ function trashGame(game: Game) {
 </script>
 
 <template>
+  <AmbientBackground />
+
   <header class="toolbar">
     <div class="brand">
       <div class="logo"><BrandLogo /></div>
@@ -419,22 +460,45 @@ function trashGame(game: Game) {
     </select>
 
     <div class="spacer"></div>
-    <button class="btn" :class="{ primary: selectMode }" title="多选：批量隐藏 / 改状态 / 移除" @click="toggleSelectMode">
+    <button class="btn toolbar-action" :class="{ primary: selectMode }" title="多选：批量隐藏 / 改状态 / 移除" @click="toggleSelectMode">
       <Icon name="check" :size="15" style="margin-right: 2px" /> 多选
     </button>
-    <button class="btn" title="检测目录已失效的游戏" @click="showMissing = true">
-      <Icon name="eye-off" :size="15" style="margin-right: 2px" /> 失效检测
-    </button>
-    <button class="btn icon-btn" title="设置" @click="showSettings = true">
+    <button class="btn icon-btn toolbar-action" title="设置" @click="showSettings = true">
       <Icon name="sliders" :size="16" />
     </button>
-    <button class="btn" title="galgame 资源站导航（社区 / 补丁 / 资源站）" @click="showResources = true">
-      <Icon name="external-link" :size="15" style="margin-right: 2px" /> 资源站
+    <!-- 低频操作收进「更多」下拉，顶栏只留主干 -->
+    <button
+      class="btn icon-btn toolbar-action"
+      :class="{ 'is-open': showMore }"
+      title="更多（失效检测 / 资源站）"
+      @click="showMore = !showMore"
+    >
+      <Icon name="chevron-down" :size="15" />
     </button>
-    <button class="btn primary" @click="showScan = true">
+    <button class="btn primary toolbar-action" @click="showScan = true">
       <Icon name="plus" :size="15" /> 扫描导入
     </button>
   </header>
+
+  <!-- 手机底部操作栏（桌面隐藏） -->
+  <nav class="mobile-nav" aria-label="主要操作">
+    <button class="mobile-nav-btn" :class="{ active: selectMode }" @click="toggleSelectMode" title="多选">
+      <Icon name="check" :size="18" />
+      <span>多选</span>
+    </button>
+    <button class="mobile-nav-btn" @click="showScan = true" title="扫描导入">
+      <Icon name="plus" :size="18" />
+      <span>导入</span>
+    </button>
+    <button class="mobile-nav-btn" @click="showSettings = true" title="设置">
+      <Icon name="sliders" :size="18" />
+      <span>设置</span>
+    </button>
+    <button class="mobile-nav-btn" :class="{ active: showMore }" @click="showMore = !showMore" title="更多">
+      <Icon name="chevron-down" :size="18" />
+      <span>更多</span>
+    </button>
+  </nav>
 
   <main class="wall" @keydown="onWallKey">
     <div v-if="state.loading && !visible.length" class="grid" aria-hidden="true">
@@ -501,7 +565,7 @@ function trashGame(game: Game) {
     <div class="ctx" :style="{ left: ctx.x + 'px', top: ctx.y + 'px' }">
       <button class="item" @click="ctxAction(openDir)"><Icon name="folder" :size="15" /> 打开游戏目录</button>
       <button class="item" @click="ctxAction((g) => handleLaunch(g, false))"><Icon name="play" :size="15" /> 启动</button>
-      <button class="item" @click="ctxAction((g) => handleLaunch(g, true))"><Icon name="globe" :size="15" /> 转区启动</button>
+      <button class="item" v-if="!isAndroid" @click="ctxAction((g) => handleLaunch(g, true))"><Icon name="globe" :size="15" /> 转区启动</button>
       <button class="item" @click="ctxAction(pickLaunchFile)"><Icon name="sliders" :size="15" /> 启动文件…</button>
       <div class="sep"></div>
       <button class="item" @click="ctxAction(handleFavorite)">
@@ -522,6 +586,26 @@ function trashGame(game: Game) {
       class="overlay"
       style="background: transparent; backdrop-filter: none"
       @click="closeCtx()"
+    ></div>
+  </template>
+
+  <!-- 顶栏「更多」下拉（复用右键菜单样式，右上锚定） -->
+  <template v-if="showMore">
+    <div class="ctx more-menu">
+      <button class="item" @click="showMissing = true; showMore = false">
+        <Icon name="eye-off" :size="15" /> 失效检测
+      </button>
+      <button class="item" @click="showResources = true; showMore = false">
+        <Icon name="external-link" :size="15" /> 资源站
+      </button>
+      <button class="item" @click="showStats = true; showMore = false">
+        <Icon name="play" :size="15" /> 数据统计
+      </button>
+    </div>
+    <div
+      class="overlay"
+      style="background: transparent; backdrop-filter: none"
+      @click="showMore = false"
     ></div>
   </template>
 
@@ -577,6 +661,9 @@ function trashGame(game: Game) {
     <ResourceDialog v-if="showResources" @close="showResources = false" />
   </Transition>
   <Transition name="overlay">
+    <StatsDialog v-if="showStats" @close="showStats = false" />
+  </Transition>
+  <Transition name="overlay">
     <MissingDialog
       v-if="showMissing"
       @close="showMissing = false"
@@ -593,9 +680,16 @@ function trashGame(game: Game) {
       @done="onLaunchPickDone"
     />
   </Transition>
+  <Transition name="overlay">
+    <AndroidEmulatorDialog
+      v-if="emulatorPick"
+      :game="emulatorPick"
+      @close="emulatorPick = null"
+    />
+  </Transition>
 
   <!-- Toast -->
-  <TransitionGroup name="toast" tag="div" class="toast-wrap">
+  <TransitionGroup name="toast" tag="div" class="toast-wrap" :class="{ lifted: selectMode && selected.size > 0 }">
     <div v-for="t in toasts" :key="t.id" class="toast" :class="t.type">{{ t.msg }}</div>
   </TransitionGroup>
 
@@ -614,6 +708,27 @@ function trashGame(game: Game) {
           <Icon name="close" :size="14" />
         </button>
       </div>
+    </div>
+  </Transition>
+
+  <!-- 批量补封面进度横幅（右下角；可取消，设置页/导入后自动补全共用） -->
+  <Transition name="update">
+    <div v-if="coverRunning" class="cover-progress">
+      <div class="ub-ic"><Icon name="image" :size="16" /></div>
+      <div class="ub-body">
+        <div class="ub-title">
+          正在补全封面
+          <template v-if="coverProgress.total > 0">
+            <b>{{ coverProgress.processed }}/{{ coverProgress.total }}</b>（{{ coverPct }}%）
+          </template>
+          <template v-else>…</template>
+        </div>
+        <div class="ub-note" v-if="coverProgress.current">当前：{{ coverProgress.current }}</div>
+        <div class="cp-bar"><i :style="{ width: coverPct + '%' }"></i></div>
+      </div>
+      <button class="btn small ghost" @click="coverCancel">
+        <Icon name="close" :size="13" /> 取消
+      </button>
     </div>
   </Transition>
 

@@ -51,10 +51,11 @@ async function pickFile() {
   }
 }
 
-const folderStart = ref("C:\\");
+const defaultRoot = /android/i.test(navigator.userAgent) ? "/storage/emulated/0" : "C:\\";
+const folderStart = ref(defaultRoot);
 const showFolder = ref(false);
 function openFolderPicker() {
-  folderStart.value = props.game?.sourceDir || "C:\\";
+  folderStart.value = props.game?.sourceDir || defaultRoot;
   showFolder.value = true;
 }
 function onFolderPicked(p: string) {

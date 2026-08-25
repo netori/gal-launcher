@@ -64,6 +64,8 @@ body,
 }
 
 #app {
+  position: relative;
+  z-index: 1;
   display: flex;
   flex-direction: column;
 }
@@ -152,9 +154,11 @@ article.card:focus-visible {
   gap: 14px;
   row-gap: 10px;
   padding: 14px 22px;
-  background: rgba(22, 18, 15, 0.84);
-  backdrop-filter: blur(14px);
-  box-shadow: inset 0 1px 0 rgba(255, 250, 244, 0.04);
+  background: rgba(22, 18, 15, 0.62);
+  backdrop-filter: blur(18px) saturate(1.15);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 250, 244, 0.04),
+    0 8px 24px rgba(20, 12, 6, 0.25);
 }
 /* 顶栏底部：柔和渐隐描边替代平直边框，给层次让位 */
 .toolbar::after {
@@ -364,13 +368,17 @@ select option {
 
 /* ============ 封面墙 ============ */
 .wall {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  min-height: 0;
   padding: 22px 26px 72px;
   overflow-y: auto;
-  height: calc(100vh - 62px);
 }
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  /* 最小列宽 184px：窄窗下 4→3 列、宽窗不变，给卡片信息区留出呼吸感 */
+  grid-template-columns: repeat(auto-fill, minmax(184px, 1fr));
   gap: 22px;
   max-width: 1560px;
   margin: 0 auto;
@@ -707,6 +715,17 @@ select option {
   background: var(--border);
   margin: 5px 8px;
 }
+/* 顶栏「更多」下拉：右上锚定，弹入方向从右上展开 */
+.more-menu {
+  right: 16px;
+  top: 52px;
+  transform-origin: top right !important;
+}
+.btn.is-open {
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+  color: var(--accent);
+}
 
 /* ============ 模态框 ============ */
 .overlay {
@@ -913,12 +932,16 @@ select option {
 }
 .drawer .hero {
   width: 100%;
-  max-height: 240px;
-  object-fit: contain;
+  aspect-ratio: 3 / 4; /* 与封面墙同比例，cover 填充不留空底 */
+  object-fit: cover;
   background: var(--bg-soft);
   border: 1px solid var(--border);
   border-radius: 12px;
   box-shadow: 0 4px 14px rgba(20, 12, 6, 0.35);
+  transition: transform var(--d-slow) var(--ease-in-out);
+}
+.drawer .hero:hover {
+  transform: scale(1.015);
 }
 .drawer .kv {
   display: grid;
@@ -1045,6 +1068,11 @@ input[type="radio"] {
   flex-direction: column;
   gap: 8px;
   align-items: center;
+  transition: bottom 220ms var(--ease-out);
+}
+/* 批量操作条出现时让位，避免 toast 与其重叠 */
+.toast-wrap.lifted {
+  bottom: 88px;
 }
 .toast {
   display: flex;
@@ -1203,6 +1231,41 @@ input[type="radio"] {
   transform: translateY(12px);
 }
 
+/* ============ 批量补封面进度横幅（右下角，与左下角更新横幅错开） ============ */
+.cover-progress {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 90;
+  width: min(360px, calc(100vw - 44px));
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 250, 244, 0.05),
+    0 8px 20px rgba(20, 12, 6, 0.45),
+    0 24px 50px rgba(20, 12, 6, 0.55);
+}
+.cover-progress .cp-bar {
+  margin-top: 6px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 250, 244, 0.08);
+  overflow: hidden;
+}
+.cover-progress .cp-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent), #f0a25e);
+  box-shadow: 0 0 8px rgba(217, 126, 61, 0.5);
+  transition: width 220ms var(--ease-out);
+}
+
 .spinner {
   width: 34px;
   height: 34px;
@@ -1246,6 +1309,125 @@ input[type="radio"] {
   }
   .card .toolrow .act {
     transform: none;
+  }
+}
+
+/* ============ 手机底部操作栏 ============ */
+.mobile-nav {
+  display: none;
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 86;
+  padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
+  background: rgba(22, 18, 15, 0.82);
+  backdrop-filter: blur(16px) saturate(1.12);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -8px 22px rgba(20, 12, 6, 0.35);
+  gap: 6px;
+}
+.mobile-nav-btn {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 7px 4px 6px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 600;
+  transition:
+    background-color var(--d-fast) var(--ease-out),
+    color var(--d-fast) var(--ease-out),
+    border-color var(--d-fast) var(--ease-out);
+}
+.mobile-nav-btn:hover {
+  color: var(--text);
+  background: var(--surface);
+}
+.mobile-nav-btn.active {
+  color: var(--accent);
+  background: rgba(217, 126, 61, 0.14);
+  border-color: rgba(217, 126, 61, 0.28);
+}
+.mobile-nav-btn span {
+  line-height: 1;
+}
+
+/* ============ 手机 / 窄屏适配 ============ */
+@media (max-width: 760px) {
+  .toolbar {
+    padding: 10px 12px;
+    gap: 8px;
+    row-gap: 8px;
+  }
+  .brand {
+    font-size: 16px;
+  }
+  .search {
+    flex: 1 1 100%;
+    max-width: none;
+  }
+  .chips {
+    width: 100%;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+  .chip {
+    flex-shrink: 0;
+  }
+  .toolbar-action {
+    display: none;
+  }
+  .toolbar .spacer {
+    display: none;
+  }
+  .mobile-nav {
+    display: flex;
+  }
+  .wall {
+    padding: 14px 12px 132px;
+  }
+  .grid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 12px;
+  }
+  .empty {
+    height: 60%;
+    padding: 0 12px;
+  }
+  .batch-bar {
+    bottom: 84px;
+    max-width: calc(100vw - 24px);
+  }
+  .toast-wrap {
+    bottom: 84px;
+  }
+  .toast-wrap.lifted {
+    bottom: 132px;
+  }
+  .update-banner {
+    left: 12px;
+    right: 12px;
+    bottom: 84px;
+    max-width: none;
+  }
+  .cover-progress {
+    left: 12px;
+    right: 12px;
+    bottom: 84px;
+    width: auto;
+  }
+  .more-menu {
+    top: auto !important;
+    bottom: 78px;
+    right: 12px;
+    left: auto;
   }
 }
 
@@ -1296,7 +1478,7 @@ input[type="radio"] {
   padding: 24px;
   background:
     radial-gradient(900px 620px at 50% -10%, rgba(217, 126, 61, 0.14), transparent 60%),
-    var(--bg);
+    rgba(22, 18, 15, 0.88);
 }
 .perm-gate .perm-card {
   width: min(400px, 100%);

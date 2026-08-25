@@ -35,7 +35,8 @@ const sortKey = ref<"name" | "size" | "modified">("name");
 const mkdirOpen = ref(false);
 const mkdirName = ref("");
 
-const sep = () => (props.root.includes("\\") ? "\\" : "/");
+const defaultRoot = /android/i.test(navigator.userAgent) ? "/storage/emulated/0" : "C:\\";
+const sep = () => (cur.value.includes("\\") ? "\\" : "/");
 const isDriveRoot = computed(() => /^[A-Za-z]:[\\/]?$/.test(cur.value));
 
 onMounted(async () => {
@@ -44,7 +45,13 @@ onMounted(async () => {
   } catch {
     drives.value = [];
   }
-  enter(props.root);
+  if (!drives.value.length && /android/i.test(navigator.userAgent)) {
+    drives.value = ["/storage/emulated/0"];
+  }
+  const initialRoot = /android/i.test(navigator.userAgent) && /^[A-Za-z]:/.test(props.root)
+    ? defaultRoot
+    : props.root;
+  enter(initialRoot);
 });
 
 async function enter(dir: string) {

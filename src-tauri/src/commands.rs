@@ -2,11 +2,13 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Mutex;
-use tauri::{AppHandle, State};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, Emitter, State};
 
 use rusqlite::Connection;
 
+use crate::bgm;
 use crate::db;
 #[cfg(target_os = "windows")]
 use crate::launcher;
@@ -20,19 +22,23 @@ use crate::vndb;
 pub struct AppState {
     pub db: Mutex<Connection>,
     pub db_path: std::path::PathBuf,
+    /// 批量补封面任务的取消标志（fetch_missing_covers 每轮检查，置位即提前停止）。
+    pub fetch_cancel: Arc<AtomicBool>,
 }
 
 type CmdResult<T> = Result<T, String>;
 
 fn lock<'a>(state: &'a State<'_, AppState>) -> std::sync::MutexGuard<'a, Connection> {
-    state.db.lock().unwrap()
+    // 持锁期间任何 panic 都会毒化连接锁，导致后续所有命令 panic——用 into_inner 免疫
+    state.db.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 /// 扫描一个根目录，返回疑似游戏目录候选列表。
 /// 已收录集合用一次短查询取回，之后释放数据库锁——重点扫描期间不会阻塞其它命令。
+/// 磁盘遍历在 spawn_blocking 中执行，避免长时间占用 Tauri 异步运行时。
 #[tauri::command]
-pub fn scan_directory(root: String, state: State<AppState>) -> CmdResult<Vec<Candidate>> {
-    let path = Path::new(&root);
+pub async fn scan_directory(root: String, state: State<'_, AppState>) -> CmdResult<Vec<Candidate>> {
+    let path = std::path::PathBuf::from(&root);
     if !path.is_dir() {
         return Err("目录不存在或无法访问".into());
     }
@@ -49,34 +55,49 @@ pub fn scan_directory(root: String, state: State<AppState>) -> CmdResult<Vec<Can
         // 归一化后比较，避免大小写/分隔符/盘符差异导致误判为「未收录」
         raw.into_iter().map(|d| util::norm_path(&d)).collect()
     };
-    Ok(scanner::scan_directory(path, &imported))
+    tauri::async_runtime::spawn_blocking(move || scanner::scan_directory(&path, &imported))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// 将选中的候选游戏写入库（跳过已收录的），返回实际新增数量。
-/// 文件遍历在锁外完成，DB 只在插入/写画像时短暂上锁。
+/// 文件遍历（最慢的一步）在 spawn_blocking 里完成，DB 只在插入/写画像时短暂上锁。
 #[tauri::command]
-pub fn import_games(candidates: Vec<Candidate>, state: State<AppState>) -> CmdResult<usize> {
+pub async fn import_games(candidates: Vec<Candidate>, state: State<'_, AppState>) -> CmdResult<usize> {
     // 锁外预计算每个候选的磁盘画像（这一步最慢，不能握着库锁）
-    let mut payloads = Vec::new();
-    for c in candidates {
-        if c.already_imported {
-            continue;
+    let payloads = tauri::async_runtime::spawn_blocking(move || {
+        let mut payloads: Vec<(
+            String,
+            String,
+            String,
+            Vec<String>,
+            String,
+            Option<String>,
+            Vec<(String, String, i64)>,
+        )> = Vec::new();
+        for c in candidates {
+            if c.already_imported {
+                continue;
+            }
+            let dir = Path::new(&c.source_dir);
+            if !dir.is_dir() {
+                continue;
+            }
+            let files = scanner::collect_game_files(dir);
+            payloads.push((
+                c.title,
+                c.source_dir,
+                c.launch_path,
+                c.launch_candidates,
+                c.engine,
+                c.cover_path,
+                files,
+            ));
         }
-        let dir = Path::new(&c.source_dir);
-        if !dir.is_dir() {
-            continue;
-        }
-        let files = scanner::collect_game_files(dir);
-        payloads.push((
-            c.title,
-            c.source_dir,
-            c.launch_path,
-            c.launch_candidates,
-            c.engine,
-            c.cover_path,
-            files,
-        ));
-    }
+        payloads
+    })
+    .await
+    .map_err(|e| e.to_string())?;
 
     let mut db = lock(&state);
     // 一次性取回已收录目录的归一化键，导入时做「相等 + 子目录包含」双重去重。
@@ -384,21 +405,96 @@ pub fn search_vndb(query: String) -> CmdResult<Vec<vndb::VnSearchHit>> {
     vndb::search_vn(&query)
 }
 
-/// 抓取某 VN 的元数据并应用到游戏（含封面下载）。
+/// 按标题搜索 Bangumi 游戏条目。
 #[tauri::command]
-pub fn apply_vndb_metadata(
-    game_id: i64,
-    vndb_id: String,
-    use_vndb_title: Option<bool>,
-    state: State<AppState>,
-) -> CmdResult<Game> {
-    let meta = vndb::fetch_vn(&vndb_id)?;
+pub fn search_bgm(query: String) -> CmdResult<Vec<bgm::BgmSearchHit>> {
+    bgm::search_bgm(&query)
+}
 
+/// 抓取某 Bangumi 条目的元数据并应用到游戏（含封面下载）。
+#[tauri::command]
+pub async fn apply_bgm_metadata(
+    game_id: i64,
+    bgm_id: String,
+    use_title: Option<bool>,
+    state: State<'_, AppState>,
+) -> CmdResult<Game> {
     let covers_dir = state.db_path.parent().unwrap_or(std::path::Path::new(".")).join("covers");
     std::fs::create_dir_all(&covers_dir).map_err(|e| format!("创建封面目录失败: {e}"))?;
 
+    let meta = {
+        let v = bgm_id.clone();
+        tauri::async_runtime::spawn_blocking(move || bgm::fetch_bgm(&v))
+            .await
+            .map_err(|e| e.to_string())?
+    }?;
+
+    let cover_id = format!("bgm_{}", meta.bgm_id);
     let cover_path = match &meta.cover_url {
-        Some(url) => vndb::download_cover(&covers_dir, &vndb_id, url).ok(),
+        Some(url) => {
+            let d = covers_dir.clone();
+            let v = cover_id.clone();
+            let u = url.clone();
+            tauri::async_runtime::spawn_blocking(move || vndb::download_cover(&d, &v, &u))
+                .await
+                .map_err(|e| e.to_string())?
+                .ok()
+        }
+        None => None,
+    };
+
+    let db = lock(&state);
+    let game = db::update_metadata(
+        &db,
+        game_id,
+        meta.description.as_deref(),
+        meta.rating,
+        Some(&format!("bgm:{}", meta.bgm_id)),
+        meta.tags.clone(),
+        meta.developers.first().map(|s| s.as_str()),
+        meta.released.as_deref(),
+        None,
+        cover_path.as_deref(),
+    )
+    .map_err(|e| e.to_string())?;
+
+    if use_title.unwrap_or(false) && !meta.title.is_empty() {
+        let new_title = meta.title_cn.as_deref().filter(|s| !s.is_empty()).unwrap_or(&meta.title);
+        db::set_title(&db, game_id, new_title).map_err(|e| e.to_string())
+    } else {
+        Ok(game)
+    }
+}
+
+/// 抓取某 VN 的元数据并应用到游戏（含封面下载）。
+/// 网络请求在 spawn_blocking 中执行，避免占用 Tauri 异步运行时。
+#[tauri::command]
+pub async fn apply_vndb_metadata(
+    game_id: i64,
+    vndb_id: String,
+    use_vndb_title: Option<bool>,
+    state: State<'_, AppState>,
+) -> CmdResult<Game> {
+    let covers_dir = state.db_path.parent().unwrap_or(std::path::Path::new(".")).join("covers");
+    std::fs::create_dir_all(&covers_dir).map_err(|e| format!("创建封面目录失败: {e}"))?;
+
+    let meta = {
+        let v = vndb_id.clone();
+        tauri::async_runtime::spawn_blocking(move || vndb::fetch_vn(&v))
+            .await
+            .map_err(|e| e.to_string())?
+    }?;
+
+    let cover_path = match &meta.cover_url {
+        Some(url) => {
+            let d = covers_dir.clone();
+            let v = vndb_id.clone();
+            let u = url.clone();
+            tauri::async_runtime::spawn_blocking(move || vndb::download_cover(&d, &v, &u))
+                .await
+                .map_err(|e| e.to_string())?
+                .ok()
+        }
         None => None,
     };
 
@@ -444,26 +540,76 @@ pub fn set_status(game_id: i64, status: String, state: State<AppState>) -> CmdRe
 pub struct CoverBatch {
     pub updated: usize,
     pub failed: Vec<String>,
+    /// 是否被用户中途取消（取消后 remaining 尚未处理的部分不再执行）。
+    pub cancelled: bool,
 }
+
+/// 前端订阅的批量补封面进度事件（payload：{ processed, total, current, done }）。
+pub const COVERS_PROGRESS_EVENT: &str = "covers-progress";
 
 /// 为所有还没有封面的游戏从 VNDB 拉取封面 + 元数据（评分/简介/标签/厂商/时长）。
 /// 命中策略：优先取有评分的首个结果，免得挂错封面；拿不准的进 failed 列表由用户手动处理。
+///
+/// 整段网络循环在 spawn_blocking 中执行（用独立连接写库，不占 AppState 锁）：
+/// - 不占用 Tauri 异步运行时；
+/// - 通过 `covers-progress` 事件向前端报进度（每处理完一个游戏发一次）；
+/// - 每轮检查 `state.fetch_cancel`，`cancel_fetch_covers` 置位后提前停止；
+/// - 维持 250ms 间隔，尊重 VNDB 200req/5min 配额（每游戏约 2 个请求）。
 #[tauri::command]
-pub fn fetch_missing_covers(state: State<AppState>) -> CmdResult<CoverBatch> {
+pub async fn fetch_missing_covers(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> CmdResult<CoverBatch> {
+    state.fetch_cancel.store(false, Ordering::SeqCst);
     let games = {
         let db = lock(&state);
         db::list_games(&db, true).map_err(|e| e.to_string())?
     };
+    let db_path = state.db_path.clone();
     let covers_dir = state
         .db_path
         .parent()
         .unwrap_or(std::path::Path::new("."))
         .join("covers");
     std::fs::create_dir_all(&covers_dir).ok();
+    let cancel = state.fetch_cancel.clone();
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        fetch_missing_covers_blocking(games, db_path, covers_dir, cancel, &app)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
 
+/// 取消正在进行的批量补封面任务（仅置位标志，循环在下一个迭代处停下）。
+#[tauri::command]
+pub fn cancel_fetch_covers(state: State<AppState>) {
+    state.fetch_cancel.store(true, Ordering::SeqCst);
+}
+
+/// fetch_missing_covers 的阻塞体（独立连接 + 独立线程里跑完整个循环）。
+fn fetch_missing_covers_blocking(
+    games: Vec<Game>,
+    db_path: std::path::PathBuf,
+    covers_dir: std::path::PathBuf,
+    cancel: Arc<AtomicBool>,
+    app: &AppHandle,
+) -> Result<CoverBatch, String> {
+    let conn = db::open_worker(&db_path)?;
+    let total = games.len();
     let mut updated = 0usize;
     let mut failed = Vec::new();
-    for g in games {
+    let mut cancelled = false;
+    for (idx, g) in games.iter().enumerate() {
+        if cancel.load(Ordering::SeqCst) {
+            cancelled = true;
+            break;
+        }
+        // 进度事件（失败也照常推进，前端看到的是「已处理」数）
+        let _ = app.emit(
+            COVERS_PROGRESS_EVENT,
+            serde_json::json!({ "processed": idx, "total": total, "current": g.title }),
+        );
         if g.cover_path.is_some() {
             continue;
         }
@@ -477,9 +623,8 @@ pub fn fetch_missing_covers(state: State<AppState>) -> CmdResult<CoverBatch> {
                 .ok_or_else(|| "该条目无封面".to_string())?;
             let meta = vndb::fetch_vn(&hit.vndb_id)?;
             let cover = vndb::download_cover(&covers_dir, &hit.vndb_id, url)?;
-            let db = lock(&state);
             db::update_metadata(
-                &db,
+                &conn,
                 g.id,
                 meta.description.as_deref(),
                 meta.rating.map(|r| r / 10.0),
@@ -500,7 +645,11 @@ pub fn fetch_missing_covers(state: State<AppState>) -> CmdResult<CoverBatch> {
         // 对 VNDB 客气点：每请求间隔 250ms
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
-    Ok(CoverBatch { updated, failed })
+    let _ = app.emit(
+        COVERS_PROGRESS_EVENT,
+        serde_json::json!({ "processed": total, "total": total, "done": true }),
+    );
+    Ok(CoverBatch { updated, failed, cancelled })
 }
 
 /// 在资源管理器中打开（若是文件则定位选中它）。后台分离启动，应用不等待。
@@ -640,8 +789,8 @@ pub fn install_patch(patch_id: i64, state: State<AppState>) -> CmdResult<Patch> 
             let bdir = backup_dir
                 .unwrap_or_else(|| backup_base(&state).join(patch_id.to_string()));
             std::fs::create_dir_all(&bdir).map_err(|e| format!("创建备份目录失败: {e}"))?;
-            // 记录备份用独立连接，避免握着 AppState 锁做 IO。
-            let conn = Connection::open(state.db_path.as_path()).map_err(|e| e.to_string())?;
+            // 记录备份用独立连接（带 busy_timeout/外键），避免握着 AppState 锁做 IO。
+            let conn = db::open_worker(&state.db_path).map_err(|e| e.to_string())?;
             patcher::install_replace(&game_dir, &source, &bdir, &conn, patch_id)?;
         }
     }
@@ -664,7 +813,7 @@ pub fn uninstall_patch(patch_id: i64, state: State<AppState>) -> CmdResult<Patch
         return Err("该补丁尚未安装".into());
     }
     if patch.install_method != "installer" {
-        let conn = Connection::open(state.db_path.as_path()).map_err(|e| e.to_string())?;
+        let conn = db::open_worker(&state.db_path).map_err(|e| e.to_string())?;
         patcher::rollback(Path::new(&game.source_dir), &conn, patch_id)?;
     }
 
@@ -712,8 +861,13 @@ pub fn list_asset_archives(game_id: i64, state: State<AppState>) -> CmdResult<Ve
 
 /// 解包某个资源包到缓存，返回条目列表。
 /// 内置不认识的格式（PAC/NSA/PKG 等）会交给设置里配置的外部解包工具。
+/// 解包耗时可能很长，整体放进 spawn_blocking，避免占用 Tauri 异步运行时。
 #[tauri::command]
-pub fn extract_assets(game_id: i64, archive_rel: String, state: State<AppState>) -> CmdResult<Vec<crate::asset::AssetEntry>> {
+pub async fn extract_assets(
+    game_id: i64,
+    archive_rel: String,
+    state: State<'_, AppState>,
+) -> CmdResult<Vec<crate::asset::AssetEntry>> {
     let (game, external_tool) = {
         let db = lock(&state);
         let game = db::get_game(&db, game_id).map_err(|e| e.to_string())?;
@@ -732,16 +886,20 @@ pub fn extract_assets(game_id: i64, archive_rel: String, state: State<AppState>)
         .unwrap_or_else(|| rel.clone());
     let out_dir = asset_root(&state, game_id).join(stem);
 
-    match crate::asset::detect_format(&abs) {
-        Some(_) => crate::asset::extract(&abs, &out_dir),
-        None => match external_tool.filter(|t| !t.trim().is_empty()) {
-            Some(tool) => crate::asset::extract_external(&abs, &out_dir, &tool),
-            None => Err(
-                "内置不支持的格式（PAC / NSA / PKG 等）。请在「设置」里配置一个外部解包工具路径后重试。"
-                    .into(),
-            ),
-        },
-    }
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<crate::asset::AssetEntry>, String> {
+        match crate::asset::detect_format(&abs) {
+            Some(_) => crate::asset::extract(&abs, &out_dir),
+            None => match external_tool.filter(|t| !t.trim().is_empty()) {
+                Some(tool) => crate::asset::extract_external(&abs, &out_dir, &tool),
+                None => Err(
+                    "内置不支持的格式（PAC / NSA / PKG 等）。请在「设置」里配置一个外部解包工具路径后重试。"
+                        .into(),
+                ),
+            },
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// 列出某游戏已解包的条目（含分类）。
@@ -813,16 +971,20 @@ const UPDATE_REPO: &str = "netori/gal-launcher";
 /// - 无 release / 网络失败 / 请求被限流 → 静默返回 None（不打扰用户）
 /// - 最新版本不高于当前版本 → None
 /// - 已被用户「不再提示」过的版本 → None
+/// 网络请求在 spawn_blocking 中执行，避免启动后 1.5s 的这个请求占用 Tauri 异步运行时。
 #[tauri::command]
-pub fn check_update(
+pub async fn check_update(
     app: AppHandle,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> CmdResult<Option<crate::models::UpdateInfo>> {
     let dismissed = {
         let db = lock(&state);
         db::get_setting(&db, "dismissed_update").unwrap_or_default()
     };
-    let info = query_latest_release(&app);
+    let app = app.clone();
+    let info = tauri::async_runtime::spawn_blocking(move || query_latest_release(&app))
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(info.and_then(|u| (u.version != dismissed).then_some(u)))
 }
 
@@ -886,10 +1048,12 @@ fn parse_version(s: &str) -> Option<(u32, u32, u32)> {
 
 /// 在常见位置查找常用的外部解包工具（GARbro / GalArc / arc_unpacker 等）。
 /// 前端传入候选 exe 文件名（小写），返回「exe 文件名 → 首次找到的完整路径」。
-/// 仅桌面端（exe 工具在移动端无意义）。
+/// 仅桌面端（exe 工具在移动端无意义）。磁盘遍历可能较慢，放进 spawn_blocking。
 #[tauri::command]
-pub fn search_unpack_tools(exes: Vec<String>) -> HashMap<String, String> {
-    detect_unpack_tools(&exes)
+pub async fn search_unpack_tools(exes: Vec<String>) -> HashMap<String, String> {
+    tauri::async_runtime::spawn_blocking(move || detect_unpack_tools(&exes))
+        .await
+        .unwrap_or_default()
 }
 
 #[cfg(target_os = "windows")]
@@ -958,6 +1122,8 @@ fn detect_unpack_tools(_exes: &[String]) -> HashMap<String, String> {
     HashMap::new()
 }
 
+/// 只在 Windows 的解包工具检测里用到；移动端（无 exe 工具）不编译调用方，属预期死代码。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn walk_for_tools(
     dir: &Path,
     wanted: &mut std::collections::HashSet<String>,

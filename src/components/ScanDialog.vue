@@ -35,7 +35,8 @@ function reset() {
   err.value = "";
 }
 
-const folderStart = ref("C:\\");
+const defaultRoot = /android/i.test(navigator.userAgent) ? "/storage/emulated/0" : "C:\\";
+const folderStart = ref(defaultRoot);
 const showFolderPicker = ref(false);
 
 /** 打开内置轻量目录选择器（原生对话框在巨型目录下会卡死窗口，故不用）。 */
@@ -43,7 +44,7 @@ function openFolderPicker() {
   api
     .getSettings()
     .then((s) => {
-      folderStart.value = s.gameRoot || "C:\\";
+      folderStart.value = s.gameRoot || defaultRoot;
       showFolderPicker.value = true;
     })
     .catch(() => (showFolderPicker.value = true));

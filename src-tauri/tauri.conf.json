@@ -20,7 +20,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost data: https://s.vndb.org; style-src 'self' 'unsafe-inline'; font-src 'self' data:; media-src 'self' asset: data:;"
     }
   },
   "bundle": {

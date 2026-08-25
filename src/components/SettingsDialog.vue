@@ -3,7 +3,11 @@ import { ref, watch } from "vue";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "../api";
+import { coverFetch } from "../composables/useCoverFetch";
+import { useAmbientSettings } from "../composables/useAmbientSettings";
 import Icon from "./Icon.vue";
+// 版本号从 package.json 读取（构建期注入），避免与后端版本三处同步时漏改
+import pkg from "../../package.json";
 import brandLogo from "../assets/brand-logo.png";
 import FolderPickerDialog from "./FolderPickerDialog.vue";
 import { useCloseOnEscape } from "../composables/useCloseOnEscape";
@@ -19,8 +23,8 @@ const saved = ref(false);
 const err = ref("");
 const bakBusy = ref(false);
 const bakMsg = ref("");
-const coverBusy = ref(false);
 const coverMsg = ref("");
+const { settings: ambientSettings } = useAmbientSettings();
 
 watch(
   () => props.modelValue,
@@ -50,11 +54,12 @@ async function browseLE() {
   if (p) lePath.value = p;
 }
 
-const folderStart = ref("C:\\");
+const defaultRoot = /android/i.test(navigator.userAgent) ? "/storage/emulated/0" : "C:\\";
+const folderStart = ref(defaultRoot);
 const showFolder = ref(false);
 /** 内置轻量目录选择器（原生对话框在巨型目录下会卡死窗口，故不用）。 */
 function openFolderPicker() {
-  folderStart.value = gameRoot.value || "C:\\";
+  folderStart.value = gameRoot.value || defaultRoot;
   showFolder.value = true;
 }
 function onFolderPicked(dir: string) {
@@ -171,20 +176,19 @@ async function doRestore() {  const file = await open({
   }
 }
 
-/** 为所有还没有封面的游戏从 VNDB 批量补封面+元数据（移到设置页，避免顶栏常驻低频操作）。 */
+/** 为所有还没有封面的游戏从 VNDB 批量补封面+元数据（移到设置页，避免顶栏常驻低频操作）。
+ *  与导入后自动补全共用 coverFetch 单例：进度横幅在左下角显示，可取消。 */
 async function doFetchCovers() {
-  if (coverBusy.value) return;
-  coverBusy.value = true;
+  if (coverFetch.running.value) return;
   coverMsg.value = "";
   try {
-    const r = await api.fetchMissingCovers();
-    if (r.updated > 0) coverMsg.value = `已补全 ${r.updated} 个封面`;
+    const r = await coverFetch.start();
+    if (r.cancelled) coverMsg.value = "已取消补全";
+    else if (r.updated > 0) coverMsg.value = `已补全 ${r.updated} 个封面`;
     else coverMsg.value = "没有需要补封面的游戏了";
     if (r.failed.length) coverMsg.value += `；${r.failed.length} 个未匹配上（可在详情里手动搜 VNDB）`;
   } catch (e) {
     coverMsg.value = String(e);
-  } finally {
-    coverBusy.value = false;
   }
 }
 
@@ -262,6 +266,38 @@ async function save() {
         </div>
 
         <div class="field">
+          <label>背景 &amp; 动效</label>
+          <label class="row toggle-row" style="cursor: pointer">
+            <input type="checkbox" v-model="ambientSettings.enabled" style="width: auto" />
+            <span>启用 galgame 插画背景</span>
+          </label>
+          <div class="row">
+            <span class="muted" style="width: 72px; flex-shrink: 0">轮换间隔</span>
+            <select v-model.number="ambientSettings.interval">
+              <option :value="6">6 秒</option>
+              <option :value="9">9 秒</option>
+              <option :value="15">15 秒</option>
+              <option :value="30">30 秒</option>
+            </select>
+          </div>
+          <div class="row">
+            <span class="muted" style="width: 72px; flex-shrink: 0">压暗强度</span>
+            <input
+              type="range"
+              min="0"
+              max="60"
+              step="1"
+              v-model.number="ambientSettings.dim"
+              style="flex: 1"
+            />
+            <span class="muted" style="width: 36px; text-align: right; font-variant-numeric: tabular-nums">
+              {{ ambientSettings.dim }}%
+            </span>
+          </div>
+          <p class="muted">关闭背景后使用纯暗色底；压暗越高，背景越不抢封面墙。</p>
+        </div>
+
+        <div class="field">
           <label>整库备份 / 恢复</label>
           <div class="row">
             <button class="btn small" :disabled="bakBusy" @click="doBackup">
@@ -278,8 +314,8 @@ async function save() {
         <div class="field">
           <label>元数据补全</label>
           <div class="row">
-            <button class="btn small" :disabled="coverBusy" @click="doFetchCovers">
-              <Icon name="image" :size="13" /> 批量补全缺失封面
+            <button class="btn small" :disabled="coverFetch.running.value" @click="doFetchCovers">
+              <Icon name="image" :size="13" /> {{ coverFetch.running.value ? "补全中…" : "批量补全缺失封面" }}
             </button>
           </div>
           <p class="muted">为没有封面的游戏从 VNDB 拉取封面与元数据（评分 / 简介 / 标签 / 厂商 / 时长）。</p>
@@ -292,7 +328,7 @@ async function save() {
       <div class="foot">
         <div class="about">
           <img :src="brandLogo" alt="GAL 启动器" draggable="false" />
-          <span><b>GAL 启动器</b><em>v0.1.0</em></span>
+          <span><b>GAL 启动器</b><em>v{{ pkg.version }}</em></span>
         </div>
         <div class="spacer"></div>
         <button class="btn" @click="emit('update:modelValue', false)">取消</button>

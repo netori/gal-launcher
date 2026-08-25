@@ -8,12 +8,42 @@ use crate::models::{FileInfo, Game, Patch};
 /// 一次性初始化数据库连接（建库 + 建表 + 迁移）。
 pub fn init(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
-    conn.pragma_update(None, "journal_mode", "WAL")?;
+    configure_conn(&conn)?;
     conn.execute_batch(SCHEMA)?;
     ensure_columns(&conn)?;
     migrate(&conn)?;
     reap_orphan_sessions(&conn)?;
+    reap_orphan_children(&conn)?;
     Ok(conn)
+}
+
+/// 标准连接配置：WAL + busy_timeout（多写连接避免 SQLITE_BUSY）+ 外键约束。
+/// 外键默认关闭且是每连接设置——不开的话 schema 里的 ON DELETE CASCADE 全部不会触发，
+/// 删除游戏后 game_files / play_sessions / patches / patch_backups 会留下永久孤儿行。
+fn configure_conn(conn: &Connection) -> Result<()> {
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    Ok(())
+}
+
+/// 打开一个带标准配置的独立连接（后台线程写库用：会话结算、补丁备份等）。
+pub fn open_worker(path: &Path) -> Result<Connection, String> {
+    let conn = Connection::open(path).map_err(|e| e.to_string())?;
+    configure_conn(&conn).map_err(|e| e.to_string())?;
+    Ok(conn)
+}
+
+/// 启动时清理历史遗留的孤儿子表行（外键约束启用前的旧库可能已积累）。
+/// 幂等且廉价：按 id 是否存在于父表判断，直接删。
+fn reap_orphan_children(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "DELETE FROM game_files   WHERE game_id  NOT IN (SELECT id FROM games);
+         DELETE FROM play_sessions WHERE game_id NOT IN (SELECT id FROM games);
+         DELETE FROM patches      WHERE game_id  NOT IN (SELECT id FROM games);
+         DELETE FROM patch_backups WHERE patch_id NOT IN (SELECT id FROM patches);",
+    )?;
+    Ok(())
 }
 
 /// 用 PRAGMA user_version 记录 schema 版本。列补齐由 ensure_columns 幂等完成，
@@ -372,19 +402,27 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
 }
 
 /// 玩家统计：把一次会话计入游戏总时长与次数（由后台监视线程调用）。
-/// 在线程内独立打开连接，避开持有 AppState 锁。
+/// 仅 Windows 的 launcher 使用；移动端 M2 运行时适配前不编译调用方，属预期死代码。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub fn finish_session(db_path: &Path, session_id: i64, game_id: i64, started_at: i64) {
-    if let Ok(conn) = Connection::open(db_path) {
-        let now = crate::util::now_secs();
-        let _ = conn.execute(
-            "UPDATE play_sessions SET ended_at = ?2 WHERE id = ?1",
-            params![session_id, now],
-        );
-        let duration = now.saturating_sub(started_at) as i64;
-        let _ = conn.execute(
-            "UPDATE games SET total_seconds = total_seconds + ?1, play_count = play_count + 1, last_played = ?2 WHERE id = ?3",
-            params![duration, now, game_id],
-        );
+    let Ok(conn) = open_worker(db_path) else {
+        eprintln!("[gal-launcher] finish_session: 无法打开数据库 {}", db_path.display());
+        return;
+    };
+    let now = crate::util::now_secs();
+    if let Err(e) = conn.execute(
+        "UPDATE play_sessions SET ended_at = ?2 WHERE id = ?1",
+        params![session_id, now],
+    ) {
+        eprintln!("[gal-launcher] finish_session: 结算会话失败 (session {session_id}): {e}");
+    }
+    let duration = now.saturating_sub(started_at) as i64;
+    if let Err(e) = conn.execute(
+        "UPDATE games SET total_seconds = total_seconds + ?1, play_count = play_count + 1, last_played = ?2 WHERE id = ?3",
+        params![duration, now, game_id],
+    ) {
+        // 游戏已删除时这两条 UPDATE 只是影响 0 行（不报错）；走到这里说明是真实写失败
+        eprintln!("[gal-launcher] finish_session: 累计时长失败 (game {game_id}): {e}");
     }
 }
 

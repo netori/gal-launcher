@@ -57,7 +57,8 @@ watch(
     closing.value = false;
     if (g.coverPath) {
       try {
-        hero.value = await api.readImage(g.coverPath);
+        // 用缩略图出 hero（省内存/加载快）；3:4 cover 与封面墙裁切一致
+        hero.value = await api.readCover(g.coverPath, 800);
       } catch {
         /* ignore */
       }
@@ -94,6 +95,19 @@ const breakdown = computed(() => {
 
 const totalSize = computed(() => files.value.reduce((s, f) => s + f.size, 0));
 
+/** 游玩进度（VNDB 估算时长 vs 实际累计时长），缺任一项则隐藏进度条。 */
+const playPct = computed(() => {
+  const g = props.game;
+  if (!g || g.totalSeconds <= 0 || !g.lengthMinutes || g.lengthMinutes <= 0) return 0;
+  return Math.min(100, Math.round((g.totalSeconds / 60 / g.lengthMinutes) * 100));
+});
+
+/** 文件画像占比条宽度；极少数目时也有个可见的底宽。 */
+function filePct(n: number): string {
+  if (!files.value.length) return "0%";
+  return `${Math.max(4, Math.round((n / files.value.length) * 100))}%`;
+}
+
 function fmtSize(b: number): string {
   const mb = b / (1024 * 1024);
   if (mb > 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -108,6 +122,7 @@ function fmtLen(min: number | null): string {
   return h > 0 ? `${h}h${m}m` : `${m}m`;
 }
 
+const isAndroid = /android/i.test(navigator.userAgent);
 const needsLocale = computed(() => (props.game ? engineNeedsLocale(props.game.engine) : false));
 const patchKindColor = (k: string) =>
   k === "汉化" ? "#a3c585" : k === "R18" ? "#e08a5e" : k === "修正" ? "#86a8c0" : "#cfc6b9";
@@ -264,6 +279,15 @@ async function removePatchEntry(p: Patch) {
           </dd>
         </dl>
 
+        <!-- 游玩进度条（实际时长 vs VNDB 估时；缺估时则不显示） -->
+        <div v-if="playPct > 0" class="play-progress">
+          <div class="pp-row">
+            <span>已游玩进度</span>
+            <b>{{ playPct }}%</b>
+          </div>
+          <div class="pp-bar"><i :style="{ width: playPct + '%' }"></i></div>
+        </div>
+
         <div class="row" style="justify-content: flex-end; margin-bottom: 12px">
           <button class="btn small" @click="pickLaunch" style="margin-right: auto">
             <Icon name="sliders" :size="13" /> 启动文件…
@@ -287,10 +311,14 @@ async function removePatchEntry(p: Patch) {
         <div class="section-title">文件画像</div>
         <div class="files">
           <span v-if="!files.length" class="muted">（暂无数据）</span>
-          <span v-for="b in breakdown" :key="b.k" class="filetag">
-            <span class="k">{{ b.label }}</span>
-            <b>{{ b.n }}</b>
-          </span>
+          <!-- 占比条：一目了然库存构成（宽度 = 该类文件数 / 总数） -->
+          <div v-for="b in breakdown" :key="b.k" class="filebar">
+            <div class="fb-top">
+              <span class="k">{{ b.label }}</span>
+              <b>{{ b.n }}</b>
+            </div>
+            <div class="fb-track"><i :style="{ width: filePct(b.n) }"></i></div>
+          </div>
         </div>
         <div class="muted" style="margin-top: 6px">合计 {{ files.length }} 个文件 · {{ fmtSize(totalSize) }}</div>
 
@@ -342,7 +370,7 @@ async function removePatchEntry(p: Patch) {
         <button class="btn primary" @click="emit('launch', props.game, false)">
           <Icon name="play" :size="14" /> 启动
         </button>
-        <button class="btn" v-if="needsLocale" @click="emit('launch', props.game, true)">
+        <button class="btn" v-if="needsLocale && !isAndroid" @click="emit('launch', props.game, true)">
           <Icon name="globe" :size="14" /> 转区启动
         </button>
         <button class="btn" @click="emit('favorite', props.game)">
@@ -448,5 +476,75 @@ async function removePatchEntry(p: Patch) {
   margin-top: 2px;
   font-size: 11.5px;
   color: #d9a25e;
+}
+
+/* 游玩进度条（同官网 mock 的 d-stat 设计：琥珀渐变 + 光晕） */
+.play-progress {
+  margin: 2px 0 14px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.pp-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 7px;
+}
+.pp-row b {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.pp-bar {
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(255, 250, 244, 0.08);
+  overflow: hidden;
+}
+.pp-bar i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), #e89a5c);
+  box-shadow: 0 0 8px rgba(217, 126, 61, 0.45);
+  transition: width 300ms var(--ease-out);
+}
+
+/* 文件画像占比条 */
+.files {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+.filebar .fb-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  margin-bottom: 3px;
+}
+.filebar .fb-top b {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.fb-track {
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 250, 244, 0.07);
+  overflow: hidden;
+}
+.fb-track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(217, 126, 61, 0.85), rgba(217, 126, 61, 0.45));
+  transition: width 300ms var(--ease-out);
 }
 </style>

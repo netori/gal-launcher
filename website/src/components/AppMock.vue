@@ -5,13 +5,14 @@
  * 无真实截图，纯 HTML/CSS 绘制，不留占位符。
  * 移动端用容器查询折叠为单列，封面墙变横向滑动 strip。
  */
+// 与真实卡片一致的演示数据：评分（常驻左上）、引擎/时长 chips（底部）
 const games = [
-  { name: "雪の街", init: "雪", tone: "c1" },
-  { name: "星屑の夜", init: "星", tone: "c2" },
-  { name: "あの日の約束", init: "約", tone: "c3" },
-  { name: "夏の灯り", init: "夏", tone: "c4" },
-  { name: "ひぐらし", init: "ひ", tone: "c5" },
-  { name: "空の欠片", init: "空", tone: "c6" },
+  { name: "雪の街", init: "雪", tone: "c1", rating: "8.4", engine: "吉里吉里", time: "14h" },
+  { name: "星屑の夜", init: "星", tone: "c2", rating: "7.9", engine: "Artemis", time: "6h" },
+  { name: "あの日の約束", init: "約", tone: "c3", rating: "8.8", engine: "Ren'Py", time: "22h" },
+  { name: "夏の灯り", init: "夏", tone: "c4", rating: "—", engine: "NScripter", time: "3h" },
+  { name: "ひぐらし", init: "ひ", tone: "c5", rating: "9.1", engine: "Unity", time: "31h" },
+  { name: "空の欠片", init: "空", tone: "c6", rating: "7.2", engine: "吉里吉里", time: "9h" },
 ];
 </script>
 
@@ -49,8 +50,13 @@ const games = [
             <div class="mock-wall" aria-hidden="true">
               <div v-for="g in games" :key="g.name" class="wall-card">
                 <div class="cover" :class="g.tone">
+                  <!-- 评分常驻左上（对应真实卡片新版设计） -->
+                  <span class="crating" :class="{ na: g.rating === '—' }">★ {{ g.rating }}</span>
                   <span class="cinit">{{ g.init }}</span>
                   <span class="cname">{{ g.name }}</span>
+                  <span class="cmeta">
+                    <i>{{ g.engine }}</i><i>{{ g.time }}</i>
+                  </span>
                 </div>
               </div>
             </div>
@@ -287,6 +293,54 @@ const games = [
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 评分常驻左上（与真实卡片新版一致） */
+.crating {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(22, 16, 11, 0.62);
+  backdrop-filter: blur(4px);
+  color: var(--star);
+  font-size: 0.68rem;
+  font-weight: 650;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  font-variant-numeric: tabular-nums;
+}
+.crating.na {
+  color: rgba(255, 250, 244, 0.5);
+}
+
+/* 引擎 / 时长 chips（对应真实卡片的 engine-chip + playtime） */
+.cmeta {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 28px;
+  display: flex;
+  gap: 6px;
+  padding: 0 12px;
+  pointer-events: none;
+}
+.cmeta i {
+  font-style: normal;
+  font-size: 0.64rem;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(22, 16, 11, 0.62);
+  backdrop-filter: blur(4px);
+  color: rgba(255, 250, 244, 0.82);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 70%;
+}
+.cmeta i + i {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
 }
 
 /* 详情面板 */
