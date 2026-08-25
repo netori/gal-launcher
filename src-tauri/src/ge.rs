@@ -4,6 +4,11 @@
 //! - 头：magic "GE" + sizeof_header(32) + orig_x/y + width + height + orig_w/h + compr_method + 保留
 //! - payload 起点 = header_size + 8；LZ 解压 → filter3 行差分 / filter2 三平面 → BGR(BGRA)→RGB(RGBA)
 //! - 输出为可预览/导出的 PNG。
+//!
+//! 注意：PGD 解码按用户要求处于暂停状态（实测 33/36 可解，3 张 LZ 字面越界），
+//! 模块暂未被引用，屏蔽 dead_code 警告；恢复时移除本行即可。
+
+#![allow(dead_code)]
 
 use std::path::Path;
 

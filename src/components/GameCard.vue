@@ -4,6 +4,7 @@ import { api, engineNeedsLocale, statusColor, statusLabel, type Game } from "../
 import Icon from "./Icon.vue";
 
 const props = defineProps<{ game: Game; selectMode?: boolean; selected?: boolean }>();
+const isAndroid = /android/i.test(navigator.userAgent);
 const emit = defineEmits<{
   click: [game: Game];
   select: [game: Game];
@@ -168,7 +169,8 @@ function onCardClick() {
 .engine-chip {
   display: inline-flex;
   align-items: center;
-  max-width: 100%;
+  flex-shrink: 0;
+  max-width: 62%; /* 与 playtime 同行时给时长让位，过长省略号截断 */
   padding: 2px 7px;
   border-radius: 999px;
   background: rgba(22, 16, 11, 0.62);
@@ -194,6 +196,7 @@ function onCardClick() {
 .playtime {
   display: inline-flex;
   align-items: center;
+  flex-shrink: 0;
   gap: 4px;
   padding: 2px 7px;
   border-radius: 999px;
@@ -280,7 +283,7 @@ function onCardClick() {
         <Icon name="play" :size="16" />
       </button>
       <button
-        v-if="engineNeedsLocale(game.engine)"
+        v-if="engineNeedsLocale(game.engine) && !isAndroid"
         class="act"
         title="Locale Emulator 转区启动"
         @click.stop="emit('launch', game, true)"

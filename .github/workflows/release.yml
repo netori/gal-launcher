@@ -1,0 +1,41 @@
+name: Release
+
+# 打 vX.Y.Z 标签时自动构建 Windows 安装包（NSIS + MSI）并发布 GitHub Release。
+# 之后应用内的「发现新版本」横幅即可直接给出下载直链。
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build & publish
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build bundles
+        run: npm run tauri build
+      - name: Create GitHub release with installers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $assets = Get-ChildItem "src-tauri\target\release\bundle" -Recurse -File |
+            Where-Object { $_.Extension -in ".exe", ".msi" }
+          if (-not $assets) {
+            Write-Error "未找到安装包产物（bundle 目录下无 exe/msi）"
+            exit 1
+          }
+          $args = @("release", "create", $tag, "--title", $tag)
+          foreach ($a in $assets) { $args += $a.FullName }
+          gh @args

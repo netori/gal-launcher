@@ -258,6 +258,35 @@ pub fn list_dir(path: &str, exts: Option<&[String]>) -> Result<DirListing, Strin
     Ok(DirListing { entries, truncated })
 }
 
+/// 清理超过 `max_age_secs` 未修改的封面缩略图缓存。
+/// 缓存 key 含源图 mtime/size，源图变化会产生新 key；旧文件是孤儿，按需重新生成即可，
+/// 不清理会让 covers/ 随备份越滚越大。启动时后台调用一次。
+pub fn cleanup_old_thumbs(thumbs_dir: &Path, max_age_secs: i64) -> usize {
+    let Ok(rd) = std::fs::read_dir(thumbs_dir) else {
+        return 0;
+    };
+    let now = now_secs();
+    let mut removed = 0usize;
+    for e in rd.filter_map(|e| e.ok()) {
+        let Ok(meta) = e.metadata() else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let age = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| (now - d.as_secs() as i64).max(0))
+            .unwrap_or(0);
+        if age > max_age_secs && std::fs::remove_file(e.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 /// 列出可用的磁盘根目录（如 "C:\\"）。仅 Windows 有意义。
 #[cfg(windows)]
 pub fn list_drives() -> Vec<String> {

@@ -75,6 +75,51 @@ const GROUPS: Group[] = [
     ],
   },
   {
+    title: "Android 手机模拟器",
+    sites: [
+      {
+        name: "JoiPlay",
+        url: "https://joiplay.com",
+        desc: "RPG Maker / Ren'Py / Unity 常用运行时；Play 商店也可搜“JoiPlay”安装",
+      },
+      {
+        name: "ExaGear",
+        url: "https://play.google.com/store/search?q=ExaGear",
+        desc: "Windows 游戏模拟器，适合直接运行部分 PC 版 galgame；版本较多，认准常用发行版",
+      },
+      {
+        name: "Kirikiroid2",
+        url: "https://github.com/Kirikiroid2/Kirikiroid2",
+        desc: "吉里吉里 / KiriKiri 引擎 Android 运行时，开源",
+      },
+      {
+        name: "ONScripter",
+        url: "https://play.google.com/store/search?q=ONScripter",
+        desc: "NScripter / ONScripter 引擎模拟器，另有开源 GitHub 版本",
+      },
+      {
+        name: "Tyranor",
+        url: "https://tyranor.jp/",
+        desc: "Tyranor 官方站，适合部分脚本引擎游戏",
+      },
+      {
+        name: "Ren'Py",
+        url: "https://www.renpy.org/",
+        desc: "Ren'Py 官方站，很多 galgame 的 Android 版直接用 Ren'Py 打包",
+      },
+      {
+        name: "ScummVM",
+        url: "https://www.scummvm.org/",
+        desc: "经典文字冒险 / 解谜引擎通用模拟器",
+      },
+      {
+        name: "RetroArch",
+        url: "https://www.retroarch.com/",
+        desc: "跨平台全能模拟器，部分老 galgame 可通过核心运行",
+      },
+    ],
+  },
+  {
     title: "游戏信息",
     sites: [
       {

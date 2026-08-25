@@ -39,3 +39,10 @@ src-tauri/gen
 
 # Android 构建本机补丁（中文路径 workaround，勿提交到仓库）
 .cargo/
+
+# 移动端测试 APK（体积大，不纳入版本库）
+*.apk
+*.idsig
+
+# 视觉审查工具本地产物
+.dsh-vision-toolkit/

@@ -14,6 +14,9 @@ use crate::util;
 /// 扫描深度上限（层数）。
 const MAX_DEPTH: usize = 10;
 
+/// Android 上没有 exe 时，也可以作为“启动/交给模拟器”的常见引擎数据文件。
+const ENGINE_LAUNCH_EXTS: &[&str] = &["xp3", "xfp3", "pfs", "nsa", "pac", "arc"];
+
 /// 扫描根目录，返回所有疑似游戏目录候选。
 /// `imported` 是已收录目录集合（用于标注 already_imported），
 /// 由调用方在短时间内查库取得，避免在漫长的磁盘扫描期间长时间占用数据库锁。
@@ -22,9 +25,10 @@ pub fn scan_directory(root: &Path, imported: &std::collections::HashSet<String>)
         return Vec::new();
     }
 
-    // 第一遍：记录所有目录，以及每个目录直接子文件中的 exe 名。
+    // 第一遍：记录所有目录，以及每个目录直接子文件中的 exe / 引擎数据文件名。
     let mut dirs: Vec<PathBuf> = Vec::new();
     let mut exe_map: HashMap<PathBuf, Vec<String>> = HashMap::new();
+    let mut data_map: HashMap<PathBuf, Vec<String>> = HashMap::new();
 
     for entry in WalkDir::new(root)
         .min_depth(1)
@@ -52,26 +56,44 @@ pub fn scan_directory(root: &Path, imported: &std::collections::HashSet<String>)
             if let Some(parent) = entry.path().parent() {
                 exe_map.entry(parent.to_path_buf()).or_default().push(fname.to_string());
             }
+        } else if is_engine_launch_file(fname) {
+            if let Some(parent) = entry.path().parent() {
+                data_map.entry(parent.to_path_buf()).or_default().push(fname.to_string());
+            }
         }
     }
 
-    // 第二遍：候选 = 直接包含合格 exe 的目录；再为每个候选选出主启动文件、识别引擎、探测封面。
+    // 第二遍：候选 = 直接包含合格 exe 的目录；
+    // Android 上还接受仅包含常见引擎数据文件（xp3/pfs/nsa/pac/arc）的目录。
     let mut raw: Vec<(PathBuf, String, Vec<String>, String, Option<String>)> = Vec::new();
     // 结构：dir, 主启动名, 全部候选名, engine, cover
     for dir in dirs.iter() {
-        let exes = match exe_map.get(dir) {
+        let eligible: Vec<String> = exe_map
+            .get(dir)
+            .map(|v| v.iter().filter(|e| is_launch_eligible(e)).map(|e| e.to_string()).collect())
+            .unwrap_or_default();
+        if !eligible.is_empty() {
+            let exes_ref: Vec<&String> = eligible.iter().collect();
+            let chosen = pick_main_exe(dir, &exes_ref);
+            let engine = detect_engine(dir, &chosen);
+            let cover = find_local_cover(dir);
+            raw.push((dir.clone(), chosen, eligible, engine, cover));
+            continue;
+        }
+
+        // 非 Android 不把“没有 exe 的目录”当作可启动游戏候选，保持桌面行为不变。
+        if !cfg!(target_os = "android") {
+            continue;
+        }
+
+        let data_files = match data_map.get(dir) {
             Some(v) => v.clone(),
             None => continue,
         };
-        let eligible: Vec<&String> = exes.iter().filter(|e| is_launch_eligible(e)).collect();
-        if eligible.is_empty() {
-            continue;
-        }
-        let candidates: Vec<String> = eligible.iter().map(|e| e.to_string()).collect();
-        let chosen = pick_main_exe(dir, &eligible);
+        let chosen = pick_main_data_file(dir, &data_files);
         let engine = detect_engine(dir, &chosen);
         let cover = find_local_cover(dir);
-        raw.push((dir.clone(), chosen, candidates, engine, cover));
+        raw.push((dir.clone(), chosen, data_files, engine, cover));
     }
 
     // 去重：若某目录的祖先目录也是候选，只保留更靠近根目录的那个（避免把父目录无谓列出来）。
@@ -118,6 +140,42 @@ fn is_skip_dir(e: &walkdir::DirEntry) -> bool {
 
 fn is_exe(name: &str) -> bool {
     name.to_ascii_lowercase().ends_with(".exe")
+}
+
+fn is_engine_launch_file(name: &str) -> bool {
+    let low = name.to_ascii_lowercase();
+    let ext = low.rsplit('.').next().unwrap_or("");
+    ENGINE_LAUNCH_EXTS.contains(&ext)
+}
+
+/// Android 无 exe 时，从引擎数据文件里挑一个最有代表性的“交给模拟器”的入口。
+fn pick_main_data_file(dir: &Path, files: &[String]) -> String {
+    let mut best: Option<(i32, i64, &String)> = None;
+    for f in files {
+        let low = f.to_ascii_lowercase();
+        let ext = low.rsplit('.').next().unwrap_or("");
+        let priority = match ext {
+            "xp3" | "xfp3" => 6,
+            "nsa" => 5,
+            "pfs" => 4,
+            "pac" => 3,
+            "arc" => 2,
+            _ => 1,
+        };
+        // 名字里带 data/arc/all/start 的通常更接近主资源入口
+        let w = if low.contains("data") || low.contains("arc") || low.contains("all") || low.contains("start") {
+            priority + 100
+        } else {
+            priority
+        };
+        let size = std::fs::metadata(dir.join(f)).map(|m| m.len() as i64).unwrap_or(0);
+        /* 这里 files 只是父目录中的文件名，实际路径在调用处拼；这里只用名字比较 */
+        let cur = best.as_ref().map(|b| (b.0, b.1)).unwrap_or((i32::MIN, i64::MIN));
+        if (w, size) > cur {
+            best = Some((w, size, f));
+        }
+    }
+    best.map(|b| b.2.clone()).unwrap_or_else(|| files.first().cloned().unwrap_or_default())
 }
 
 /// 哪些名字铁定不是主启动程序的 exe。

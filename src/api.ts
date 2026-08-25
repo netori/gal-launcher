@@ -65,6 +65,16 @@ export interface VnSearchHit {
   votecount: number;
 }
 
+export interface BgmSearchHit {
+  bgmId: string;
+  title: string;
+  titleCn: string | null;
+  imageUrl: string | null;
+  rating: number | null;
+  rank: number | null;
+  nsfw: boolean;
+}
+
 export interface Settings {
   localeEmulatorPath: string | null;
   gameRoot: string | null;
@@ -130,10 +140,14 @@ export const api = {
   searchVndb: (query: string) => invoke<VnSearchHit[]>("search_vndb", { query }),
   applyVndbMetadata: (gameId: number, vndbId: string, useVndbTitle: boolean) =>
     invoke<Game>("apply_vndb_metadata", { gameId, vndbId, useVndbTitle }),
+  searchBgm: (query: string) => invoke<BgmSearchHit[]>("search_bgm", { query }),
+  applyBgmMetadata: (gameId: number, bgmId: string, useTitle: boolean) =>
+    invoke<Game>("apply_bgm_metadata", { gameId, bgmId, useTitle }),
   setGameTitle: (gameId: number, title: string) =>
     invoke<Game>("set_game_title", { gameId, title }),
   fetchMissingCovers: () =>
-    invoke<{ updated: number; failed: string[] }>("fetch_missing_covers"),
+    invoke<{ updated: number; failed: string[]; cancelled: boolean }>("fetch_missing_covers"),
+  cancelFetchCovers: () => invoke<void>("cancel_fetch_covers"),
   reveal: (path: string) => invoke<void>("reveal_in_explorer", { path }),
 
   // 补丁
@@ -210,7 +224,8 @@ export const engineNeedsLocale = (engine: string) =>
 /** 游玩状态元数据（key / 中文标签 / 语义色）。 */
 export const STATUS_META: { key: string; label: string; color: string }[] = [
   { key: "", label: "未分类", color: "#8a8178" },
-  { key: "wishlist", label: "想玩", color: "#6bb4ff" },
+  // 想玩用暖杏色：全色板唯一冷色 #6bb4ff 已移除，保持暖色体系一致
+  { key: "wishlist", label: "想玩", color: "#d9a25e" },
   { key: "playing", label: "进行中", color: "#93b46e" },
   { key: "finished", label: "已通关", color: "#f0b429" },
   { key: "dropped", label: "搁置", color: "#e2645c" },
