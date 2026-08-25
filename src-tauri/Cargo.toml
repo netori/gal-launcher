@@ -24,6 +24,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 walkdir = "2"
 regex = "1"
 ureq = { version = "2", features = ["json"] }
+urlencoding = "2"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 png = "0.17"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "bmp", "gif"] }

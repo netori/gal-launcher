@@ -10,6 +10,8 @@ use rusqlite::Connection;
 
 use crate::bgm;
 use crate::db;
+use crate::hikarinagi;
+use crate::kun;
 #[cfg(target_os = "windows")]
 use crate::launcher;
 use crate::models::{Candidate, FileInfo, Game, Patch, PatchInput, Settings};
@@ -601,6 +603,92 @@ pub async fn apply_vndb_metadata(
     } else {
         Ok(game)
     }
+}
+
+// ---------------- Kungal 元数据 ----------------
+
+#[tauri::command]
+pub fn search_kun(query: String) -> CmdResult<Vec<kun::KunSearchHit>> {
+    kun::search_kun(&query)
+}
+
+#[tauri::command]
+pub async fn apply_kun_metadata(
+    game_id: i64,
+    kun_id: String,
+    use_title: Option<bool>,
+    state: State<'_, AppState>,
+) -> CmdResult<Game> {
+    let covers_dir = state.db_path.parent().unwrap_or(std::path::Path::new(".")).join("covers");
+    std::fs::create_dir_all(&covers_dir).map_err(|e| format!("创建封面目录失败: {e}"))?;
+    let meta = {
+        let v = kun_id.clone();
+        tauri::async_runtime::spawn_blocking(move || kun::fetch_kun(&v))
+            .await
+            .map_err(|e| e.to_string())?
+    }?;
+    let cover_id = format!("kun_{}", meta.kun_id);
+    let cover_path = match &meta.image_url {
+        Some(url) => {
+            let d = covers_dir.clone(); let v = cover_id.clone(); let u = url.clone();
+            tauri::async_runtime::spawn_blocking(move || vndb::download_cover(&d, &v, &u))
+                .await.map_err(|e| e.to_string())?.ok()
+        }
+        None => None,
+    };
+    let db = lock(&state);
+    let game = db::update_metadata(
+        &db, game_id, meta.description.as_deref(), None,
+        Some(&format!("kun:{}", meta.kun_id)), meta.tags.clone(),
+        meta.developers.first().map(|s| s.as_str()), meta.released.as_deref(), None, cover_path.as_deref(),
+    ).map_err(|e| e.to_string())?;
+    if use_title.unwrap_or(false) && !meta.title.is_empty() {
+        let t = meta.title_cn.as_deref().filter(|s| !s.is_empty()).unwrap_or(&meta.title);
+        db::set_title(&db, game_id, t).map_err(|e| e.to_string())
+    } else { Ok(game) }
+}
+
+// ---------------- Hikarinagi 元数据 ----------------
+
+#[tauri::command]
+pub fn search_hikarinagi(query: String) -> CmdResult<Vec<hikarinagi::HikarinagiSearchHit>> {
+    hikarinagi::search_hikarinagi(&query)
+}
+
+#[tauri::command]
+pub async fn apply_hikarinagi_metadata(
+    game_id: i64,
+    hika_id: String,
+    use_title: Option<bool>,
+    state: State<'_, AppState>,
+) -> CmdResult<Game> {
+    let covers_dir = state.db_path.parent().unwrap_or(std::path::Path::new(".")).join("covers");
+    std::fs::create_dir_all(&covers_dir).map_err(|e| format!("创建封面目录失败: {e}"))?;
+    let meta = {
+        let v = hika_id.clone();
+        tauri::async_runtime::spawn_blocking(move || hikarinagi::fetch_hikarinagi(&v))
+            .await
+            .map_err(|e| e.to_string())?
+    }?;
+    let cover_id = format!("hika_{}", meta.hika_id);
+    let cover_path = match &meta.image_url {
+        Some(url) => {
+            let d = covers_dir.clone(); let v = cover_id.clone(); let u = url.clone();
+            tauri::async_runtime::spawn_blocking(move || vndb::download_cover(&d, &v, &u))
+                .await.map_err(|e| e.to_string())?.ok()
+        }
+        None => None,
+    };
+    let db = lock(&state);
+    let game = db::update_metadata(
+        &db, game_id, meta.description.as_deref(), meta.score,
+        Some(&format!("hika:{}", meta.hika_id)), meta.tags.clone(),
+        meta.developers.first().map(|s| s.as_str()), meta.released.as_deref(), None, cover_path.as_deref(),
+    ).map_err(|e| e.to_string())?;
+    if use_title.unwrap_or(false) && !meta.title.is_empty() {
+        let t = meta.title_cn.as_deref().filter(|s| !s.is_empty()).unwrap_or(&meta.title);
+        db::set_title(&db, game_id, t).map_err(|e| e.to_string())
+    } else { Ok(game) }
 }
 
 /// 手动改游戏显示标题。

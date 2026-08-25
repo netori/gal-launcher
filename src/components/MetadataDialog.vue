@@ -1,6 +1,13 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { api, type BgmSearchHit, type Game, type VnSearchHit } from "../api";
+import {
+  api,
+  type BgmSearchHit,
+  type Game,
+  type HikarinagiSearchHit,
+  type KunSearchHit,
+  type VnSearchHit,
+} from "../api";
 import Icon from "./Icon.vue";
 import { useCloseOnEscape } from "../composables/useCloseOnEscape";
 
@@ -12,14 +19,18 @@ const emit = defineEmits<{
 useCloseOnEscape(() => emit("close"));
 
 const q = ref("");
-const source = ref<"vndb" | "bgm">("vndb");
+const source = ref<"vndb" | "bgm" | "kun" | "hika">("vndb");
 const vndbHits = ref<VnSearchHit[]>([]);
 const bgmHits = ref<BgmSearchHit[]>([]);
+const kunHits = ref<KunSearchHit[]>([]);
+const hikaHits = ref<HikarinagiSearchHit[]>([]);
 const searching = ref(false);
 const applying = ref("");
 const err = ref("");
 const useVndbTitle = ref(false);
 const useBgmTitle = ref(false);
+const useKunTitle = ref(false);
+const useHikaTitle = ref(false);
 
 async function search() {
   if (!q.value.trim()) return;
@@ -27,11 +38,17 @@ async function search() {
   err.value = "";
   vndbHits.value = [];
   bgmHits.value = [];
+  kunHits.value = [];
+  hikaHits.value = [];
   try {
     if (source.value === "vndb") {
       vndbHits.value = await api.searchVndb(q.value.trim());
-    } else {
+    } else if (source.value === "bgm") {
       bgmHits.value = await api.searchBgm(q.value.trim());
+    } else if (source.value === "kun") {
+      kunHits.value = await api.searchKun(q.value.trim());
+    } else {
+      hikaHits.value = await api.searchHikarinagi(q.value.trim());
     }
   } catch (e) {
     err.value = String(e);
@@ -70,6 +87,36 @@ async function applyBgmHit(h: BgmSearchHit) {
   }
 }
 
+async function applyKunHit(h: KunSearchHit) {
+  if (!props.game) return;
+  applying.value = "kun:" + h.kunId;
+  err.value = "";
+  try {
+    const updated = await api.applyKunMetadata(props.game.id, h.kunId, useKunTitle.value);
+    emit("applied", updated);
+    emit("close");
+  } catch (e) {
+    err.value = String(e);
+  } finally {
+    applying.value = "";
+  }
+}
+
+async function applyHikaHit(h: HikarinagiSearchHit) {
+  if (!props.game) return;
+  applying.value = "hika:" + h.hikaId;
+  err.value = "";
+  try {
+    const updated = await api.applyHikarinagiMetadata(props.game.id, h.hikaId, useHikaTitle.value);
+    emit("applied", updated);
+    emit("close");
+  } catch (e) {
+    err.value = String(e);
+  } finally {
+    applying.value = "";
+  }
+}
+
 function vndbRating(h: VnSearchHit): string {
   return h.rating != null ? (h.rating / 10).toFixed(2) : "—";
 }
@@ -95,6 +142,8 @@ function bgmRating(h: BgmSearchHit): string {
         <div class="source-tabs">
           <button class="source-tab" :class="{ on: source === 'vndb' }" @click="source = 'vndb'">VNDB</button>
           <button class="source-tab" :class="{ on: source === 'bgm' }" @click="source = 'bgm'">Bangumi</button>
+          <button class="source-tab" :class="{ on: source === 'kun' }" @click="source = 'kun'">Kungal</button>
+          <button class="source-tab" :class="{ on: source === 'hika' }" @click="source = 'hika'">Hikarinagi</button>
         </div>
 
         <div class="row" style="gap: 8px">
@@ -114,9 +163,17 @@ function bgmRating(h: BgmSearchHit): string {
           <input type="checkbox" v-model="useVndbTitle" />
           同时把游戏标题改为 VNDB 主标题
         </label>
-        <label v-else class="toggle" style="margin-top: 8px">
+        <label v-else-if="source === 'bgm'" class="toggle" style="margin-top: 8px">
           <input type="checkbox" v-model="useBgmTitle" />
           同时把游戏标题改为 Bangumi 中文名（无中文则用原名）
+        </label>
+        <label v-else-if="source === 'kun'" class="toggle" style="margin-top: 8px">
+          <input type="checkbox" v-model="useKunTitle" />
+          同时使用 Kungal 中文标题
+        </label>
+        <label v-else class="toggle" style="margin-top: 8px">
+          <input type="checkbox" v-model="useHikaTitle" />
+          同时使用 Hikarinagi 中文标题
         </label>
 
         <div v-if="err" class="toast err" style="margin-top: 6px">{{ err }}</div>
@@ -163,12 +220,47 @@ function bgmRating(h: BgmSearchHit): string {
           </div>
         </div>
 
+        <!-- Kungal results -->
+        <div v-if="source === 'kun' && kunHits.length" class="vn-list">
+          <div v-for="h in kunHits" :key="'kun-' + h.kunId" class="vn">
+            <img v-if="h.imageUrl" class="vh" :src="h.imageUrl" alt="" loading="lazy" />
+            <div v-else class="vh no">{{ h.title.charAt(0) }}</div>
+            <div style="flex: 1; min-width: 0">
+              <div class="nm">{{ h.title }}</div>
+              <div class="sub">kun:{{ h.kunId }}<template v-if="h.releaseDate"> · {{ h.releaseDate }}</template></div>
+            </div>
+            <button class="btn primary small" :disabled="applying.length > 0" @click="applyKunHit(h)">
+              {{ applying === 'kun:' + h.kunId ? "应用中…" : "应用" }}
+            </button>
+          </div>
+        </div>
+
+        <!-- Hikarinagi results -->
+        <div v-if="source === 'hika' && hikaHits.length" class="vn-list">
+          <div v-for="h in hikaHits" :key="'hika-' + h.hikaId" class="vn">
+            <img v-if="h.imageUrl" class="vh" :src="h.imageUrl" alt="" loading="lazy" />
+            <div v-else class="vh no">{{ h.title.charAt(0) }}</div>
+            <div style="flex: 1; min-width: 0">
+              <div class="nm">{{ h.title }}</div>
+              <div class="sub">hikarinagi:{{ h.hikaId }}<template v-if="h.developer"> · {{ h.developer }}</template></div>
+            </div>
+            <button class="btn primary small" :disabled="applying.length > 0" @click="applyHikaHit(h)">
+              {{ applying === 'hika:' + h.hikaId ? "应用中…" : "应用" }}
+            </button>
+          </div>
+        </div>
+
         <div
           v-else-if="!searching && q"
           class="muted"
           style="padding: 12px 2px"
         >
-          {{ source === 'vndb' ? 'VNDB 没有结果' : 'Bangumi 没有结果' }}（试试日文原名 / 罗马音）。
+          {{
+            source === 'vndb' ? 'VNDB 没有结果' :
+            source === 'bgm' ? 'Bangumi 没有结果' :
+            source === 'kun' ? 'Kungal 没有结果' :
+            'Hikarinagi 没有结果'
+          }}（试试日文原名 / 罗马音）。
         </div>
       </div>
 

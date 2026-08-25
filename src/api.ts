@@ -71,6 +71,20 @@ export interface CollectionSummary {
   count: number;
 }
 
+export interface KunSearchHit {
+  kunId: string;
+  title: string;
+  imageUrl: string | null;
+  releaseDate: string | null;
+}
+
+export interface HikarinagiSearchHit {
+  hikaId: string;
+  title: string;
+  imageUrl: string | null;
+  developer: string | null;
+}
+
 export interface BgmSearchHit {
   bgmId: string;
   title: string;
@@ -162,6 +176,12 @@ export const api = {
   searchBgm: (query: string) => invoke<BgmSearchHit[]>("search_bgm", { query }),
   applyBgmMetadata: (gameId: number, bgmId: string, useTitle: boolean) =>
     invoke<Game>("apply_bgm_metadata", { gameId, bgmId, useTitle }),
+  searchKun: (query: string) => invoke<KunSearchHit[]>("search_kun", { query }),
+  applyKunMetadata: (gameId: number, kunId: string, useTitle: boolean) =>
+    invoke<Game>("apply_kun_metadata", { gameId, kunId, useTitle }),
+  searchHikarinagi: (query: string) => invoke<HikarinagiSearchHit[]>("search_hikarinagi", { query }),
+  applyHikarinagiMetadata: (gameId: number, hikaId: string, useTitle: boolean) =>
+    invoke<Game>("apply_hikarinagi_metadata", { gameId, hikaId, useTitle }),
   setGameTitle: (gameId: number, title: string) =>
     invoke<Game>("set_game_title", { gameId, title }),
   fetchMissingCovers: () =>

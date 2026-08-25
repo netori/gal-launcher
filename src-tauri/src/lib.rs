@@ -7,6 +7,8 @@ mod commands;
 mod db;
 mod esc;
 mod ge;
+mod hikarinagi;
+mod kun;
 #[cfg(target_os = "windows")]
 mod launcher;
 mod models;
@@ -107,6 +109,10 @@ pub fn run() {
             commands::apply_vndb_metadata,
             commands::search_bgm,
             commands::apply_bgm_metadata,
+            commands::search_kun,
+            commands::apply_kun_metadata,
+            commands::search_hikarinagi,
+            commands::apply_hikarinagi_metadata,
             commands::set_game_title,
             commands::set_status,
             commands::list_collections,
